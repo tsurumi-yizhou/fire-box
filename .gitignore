@@ -1,0 +1,16 @@
+/ref
+/target
+.dashscope_refresh_token_*
+**/.DS_Store
+**/Thumbs.db
+.vscode/
+.idea/
+*.log
+*.swp
+*.swo
+*.bak
+*.tmp
+*.old
+
+/config.json
+/Cargo.lock

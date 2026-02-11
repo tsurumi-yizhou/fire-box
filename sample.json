@@ -1,0 +1,75 @@
+{
+    "log": {
+        "level": "info"
+    },
+    "providers": [
+        {
+            "tag": "OpenAI",
+            "type": "openai",
+            "api_key": "REPLACE_WITH_OPENAI_API_KEY",
+            "base_url": "https://api.openai.com/v1"
+        },
+        {
+            "tag": "Anthropic",
+            "type": "anthropic",
+            "api_key": "REPLACE_WITH_ANTHROPIC_API_KEY",
+            "base_url": "https://api.anthropic.com/v1"
+        },
+        {
+            "tag": "Qwen",
+            "type": "dashscope",
+            "api_key": "REPLACE_WITH_DASHSCOPE_REFRESH_TOKEN",
+            "base_url": "https://chat.qwen.ai"
+        }
+    ],
+    "channels": [
+        {
+            "type": "openai",
+            "tag": "coding-openai",
+            "port": 3000,
+            "api_key": "REPLACE_WITH_CHANNEL_API_KEY"
+        },
+        {
+            "type": "anthropic",
+            "tag": "coding-anthropic",
+            "port": 3001,
+            "api_key": "REPLACE_WITH_CHANNEL_API_KEY"
+        }
+    ],
+    "routes": [
+        {
+            "channel": [
+                "coding-openai",
+                "coding-anthropic"
+            ],
+            "keywords": [
+                "def",
+                "class",
+                "import",
+                "function"
+            ],
+            "select": [
+                {
+                    "provider": "Anthropic",
+                    "model": "claude-opus-4.5"
+                },
+                {
+                    "provider": "Qwen",
+                    "model": "coder-model"
+                },
+                {
+                    "provider": "OpenAI",
+                    "model": "gpt-5.2-chat"
+                }
+            ]
+        },
+        {
+            "select": [
+                {
+                    "provider": "OpenAI",
+                    "model": "gpt-5.2-chat"
+                }
+            ]
+        }
+    ]
+}
