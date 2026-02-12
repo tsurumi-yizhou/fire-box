@@ -83,6 +83,7 @@ pub struct StreamEvent {
 
 impl UnifiedRequest {
     /// Returns concatenated text of all user messages (for keyword matching).
+    #[allow(dead_code)]
     pub fn user_text(&self) -> String {
         self.messages
             .iter()

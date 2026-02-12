@@ -2,74 +2,111 @@
     "log": {
         "level": "info"
     },
+    "service": {
+        "uds": "/tmp/fire-box.sock",
+        "tcp": "127.0.0.1:3000"
+    },
     "providers": [
-        {
-            "tag": "OpenAI",
-            "type": "openai",
-            "api_key": "REPLACE_WITH_OPENAI_API_KEY",
-            "base_url": "https://api.openai.com/v1"
-        },
         {
             "tag": "Anthropic",
             "type": "anthropic",
-            "api_key": "REPLACE_WITH_ANTHROPIC_API_KEY",
+            "auth_token": "sk-test-1234567890abcdef",
             "base_url": "https://api.anthropic.com/v1"
         },
         {
-            "tag": "Qwen",
-            "type": "dashscope",
-            "api_key": "REPLACE_WITH_DASHSCOPE_REFRESH_TOKEN",
-            "base_url": "https://chat.qwen.ai"
-        }
-    ],
-    "channels": [
-        {
+            "tag": "Mistral",
             "type": "openai",
-            "tag": "coding-openai",
-            "port": 3000,
-            "api_key": "REPLACE_WITH_CHANNEL_API_KEY"
+            "api_key": "sk-mistral-0987654321fedcba",
+            "base_url": "https://api.mistral.ai/v1"
         },
         {
+            "tag": "OpenRouter",
+            "type": "openai",
+            "api_key": "sk-or-v1-abcdefghijklmnopqrstuvwxyz",
+            "base_url": "https://openrouter.ai/api/v1"
+        },
+        {
+            "tag": "NIM",
+            "type": "openai",
+            "api_key": "nvapi-1234567890abcdef1234567890abcd",
+            "base_url": "https://integrate.api.nvidia.com/v1"
+        },
+        {
+            "tag": "深度求索",
+            "type": "openai",
+            "api_key": "sk-deepseek-abcdef1234567890abcdef12345678",
+            "base_url": "https://api.deepseek.com/v1"
+        },
+        {
+            "tag": "火山引擎",
+            "type": "openai",
+            "api_key": "ak-volcengine-abcdefghijklmnopqrstuvwxyz",
+            "base_url": "https://ark.cn-beijing.volces.com/api/v3"
+        },
+        {
+            "tag": "月之暗面",
             "type": "anthropic",
-            "tag": "coding-anthropic",
-            "port": 3001,
-            "api_key": "REPLACE_WITH_CHANNEL_API_KEY"
+            "auth_token": "sk-kimi-abcdef1234567890",
+            "base_url": "https://api.moonshot.cn/anthropic/v1"
+        },
+        {
+            "tag": "通义千问",
+            "type": "dashscope",
+            "oauth_creds_path": "~/.qwen/oauth_creds.json"
         }
     ],
-    "routes": [
-        {
-            "channel": [
-                "coding-openai",
-                "coding-anthropic"
-            ],
-            "keywords": [
-                "def",
-                "class",
-                "import",
-                "function"
-            ],
-            "select": [
-                {
-                    "provider": "Anthropic",
-                    "model": "claude-opus-4.5"
-                },
-                {
-                    "provider": "Qwen",
-                    "model": "coder-model"
-                },
-                {
-                    "provider": "OpenAI",
-                    "model": "gpt-5.2-chat"
-                }
-            ]
-        },
-        {
-            "select": [
-                {
-                    "provider": "OpenAI",
-                    "model": "gpt-5.2-chat"
-                }
-            ]
-        }
-    ]
+    "models": {
+        "gpt-5.2": [
+            {
+                "provider": "OpenRouter",
+                "model_id": "openai/gpt-5.2-chat"
+            }
+        ],
+        "claude-opus-4.5": [
+            {
+                "provider": "Anthropic",
+                "model_id": "claude-opus-4-5"
+            },
+            {
+                "provider": "OpenRouter",
+                "model_id": "anthropic/claude-opus-4.5"
+            }
+        ],
+        "gemini-3-pro-preview": [
+            {
+                "provider": "OpenRouter",
+                "model_id": "google/gemini-3-pro-preview"
+            }
+        ],
+        "mistral-large-latest": [
+            {
+                "provider": "Mistral",
+                "model_id": "mistral-large-latest"
+            }
+        ],
+        "kimi-k2.5": [
+            {
+                "provider": "月之暗面",
+                "model_id": "kimi-k2.5"
+            }
+        ],
+        "deepseek-r3.2": [
+            {
+                "provider": "深度求索",
+                "model_id": "deepseek-reasoner"
+            }
+        ],
+        "glm-4.7": [
+            {
+                "provider": "NIM",
+                "model_id": "z-ai/glm4.7"
+            }
+        ],
+        "qwen3-coder-plus": [
+            {
+                "provider": "通义千问",
+                "model_id": "coder-model"
+            }
+        ]
+    }
 }

@@ -25,6 +25,7 @@ impl SessionManager {
 
     /// Get or create a session ID for the given remote address.
     /// The source port of the remote address is used as the session key.
+    #[allow(dead_code)]
     pub async fn get_or_create(&self, remote: SocketAddr) -> Uuid {
         let port = remote.port();
         // Fast path: read lock.

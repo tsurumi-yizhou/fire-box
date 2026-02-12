@@ -11,30 +11,43 @@ use anyhow::Context;
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
+use std::path::PathBuf;
 use std::sync::OnceLock;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
 // ─── DashScope OAuth token management ──────────────────────────────────────
-// config.api_key is actually a refresh_token. We exchange it for a short-lived
-// access_token via {base_url}/api/v1/oauth2/token.
+// oauth_creds_path points to a JSON file with access_token, refresh_token,
+// resource_url, and expiry_date. We use the access_token directly if valid,
+// otherwise refresh via the OAuth token endpoint. If the creds file does not
+// exist or the refresh_token is invalid, we start a device code OAuth flow.
 
+const OAUTH_BASE_URL: &str = "https://chat.qwen.ai";
+const DEVICE_CODE_PATH: &str = "/api/v1/oauth2/device/code";
 const TOKEN_PATH: &str = "/api/v1/oauth2/token";
 const OAUTH_CLIENT_ID: &str = "f0304373b74a44d2b584a3fb70ca9e56";
+const OAUTH_SCOPE: &str = "openid profile email model.completion";
+const DEVICE_CODE_GRANT_TYPE: &str = "urn:ietf:params:oauth:grant-type:device_code";
 const TOKEN_REFRESH_BUFFER_SECS: u64 = 30;
-/// Default refresh_token validity period: 90 days
-const REFRESH_TOKEN_DEFAULT_VALIDITY_SECS: u64 = 90 * 24 * 3600;
+const DEVICE_CODE_POLL_INTERVAL_SECS: u64 = 2;
+const DEVICE_CODE_MAX_POLL_INTERVAL_SECS: u64 = 10;
 
-#[derive(Debug, Serialize, Deserialize)]
-struct PersistedTokenData {
+/// On-disk format of the OAuth credentials file.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct OAuthCredsFile {
+    access_token: String,
+    #[serde(default)]
+    token_type: Option<String>,
     refresh_token: String,
-    /// Unix timestamp (seconds) when the refresh_token expires.
+    resource_url: String,
+    /// Unix timestamp in **milliseconds** when the access_token expires.
     expiry_date: u64,
 }
 
-fn get_token_file_path(provider_tag: &str) -> String {
-    format!(".dashscope_refresh_token_{}", provider_tag)
+fn resolve_creds_path(raw: &str) -> PathBuf {
+    PathBuf::from(shellexpand::tilde(raw).as_ref())
 }
 
 fn urlencoded(s: &str) -> String {
@@ -52,86 +65,66 @@ fn urlencoded(s: &str) -> String {
     out
 }
 
-/// Load the latest persisted refresh_token with expiry check.
-/// Returns None if file doesn't exist, is invalid JSON, or token is expired.
-fn load_persisted_token(provider_tag: &str) -> Option<String> {
-    let file_path = get_token_file_path(provider_tag);
-    let content = std::fs::read_to_string(&file_path).ok()?;
-    let data: PersistedTokenData = serde_json::from_str(&content).ok()?;
-
-    // Check if token is expired (with some buffer)
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()?
-        .as_secs();
-
-    if data.expiry_date > now + TOKEN_REFRESH_BUFFER_SECS {
-        Some(data.refresh_token)
+/// Build the HTTPS base URL from a resource_url value (e.g. "portal.qwen.ai").
+fn base_url_from_resource(resource_url: &str) -> String {
+    let normalized = if resource_url.starts_with("http") {
+        resource_url.to_string()
     } else {
-        debug!(
-            provider = provider_tag,
-            "Persisted refresh_token expired, will use config value"
-        );
-        None
+        format!("https://{}", resource_url)
+    };
+    if normalized.ends_with("/v1") {
+        normalized
+    } else {
+        format!("{}/v1", normalized.trim_end_matches('/'))
     }
 }
 
-/// Persist the rotated refresh_token with expiry so it survives process restarts.
-/// Note: refresh_token typically has a much longer validity than access_token.
-/// We use a 90-day default validity period.
-fn save_persisted_token(provider_tag: &str, token: &str) {
-    let file_path = get_token_file_path(provider_tag);
-    let expiry_date = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() + REFRESH_TOKEN_DEFAULT_VALIDITY_SECS)
-        .unwrap_or(0);
-
-    let data = PersistedTokenData {
-        refresh_token: token.to_string(),
-        expiry_date,
-    };
-
-    if let Ok(json) = serde_json::to_string_pretty(&data)
-        && let Err(e) = std::fs::write(&file_path, json)
-    {
-        warn!(error = %e, provider = provider_tag, "Failed to persist DashScope refresh token");
-    }
+/// Current epoch in milliseconds.
+fn now_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 struct TokenCache {
     access_token: String,
     base_url: String,
     expires_at: Instant,
-    refresh_token: String,
 }
 
-static TOKEN_CACHE: OnceLock<RwLock<Option<TokenCache>>> = OnceLock::new();
+static TOKEN_CACHE: OnceLock<RwLock<std::collections::HashMap<String, TokenCache>>> =
+    OnceLock::new();
 
-fn token_cache() -> &'static RwLock<Option<TokenCache>> {
-    TOKEN_CACHE.get_or_init(|| RwLock::new(None))
+fn token_cache() -> &'static RwLock<std::collections::HashMap<String, TokenCache>> {
+    TOKEN_CACHE.get_or_init(|| RwLock::new(std::collections::HashMap::new()))
 }
 
-/// Resolved access token and API base URL obtained via token refresh.
+/// Resolved access token and API base URL obtained from creds file or refresh.
 pub struct ResolvedToken {
     pub access_token: String,
     pub base_url: String,
 }
 
 /// Ensure a valid access token is available for DashScope.
-/// `provider_tag` is used to create per-provider token persistence files.
-/// `refresh_token` is the value from config's `api_key` field.
-/// `config_base_url` is the `base_url` from config, used as fallback when the
-/// token response does not include a `resource_url`.
+///
+/// Flow:
+/// 1. Check in-memory cache
+/// 2. Read creds file → if access_token valid, use it
+/// 3. If access_token expired → refresh via refresh_token
+/// 4. If creds file missing or refresh fails → run device code OAuth flow
 pub async fn ensure_access_token(
     http: &reqwest::Client,
     provider_tag: &str,
-    refresh_token: &str,
-    config_base_url: &str,
+    oauth_creds_path: &str,
 ) -> anyhow::Result<ResolvedToken> {
+    let creds_path = resolve_creds_path(oauth_creds_path);
+    let cache_key = oauth_creds_path.to_string();
+
     // Fast path: read lock
     {
         let guard = token_cache().read().await;
-        if let Some(cached) = guard.as_ref()
+        if let Some(cached) = guard.get(&cache_key)
             && cached.expires_at > Instant::now()
         {
             return Ok(ResolvedToken {
@@ -144,7 +137,7 @@ pub async fn ensure_access_token(
     // Slow path: write lock + refresh
     let mut guard = token_cache().write().await;
     // Double-check after lock upgrade
-    if let Some(cached) = guard.as_ref()
+    if let Some(cached) = guard.get(&cache_key)
         && cached.expires_at > Instant::now()
     {
         return Ok(ResolvedToken {
@@ -153,20 +146,105 @@ pub async fn ensure_access_token(
         });
     }
 
-    // Use latest refresh_token: in-memory cache > persisted file > config value
-    let current_refresh = guard
-        .as_ref()
-        .map(|c| c.refresh_token.clone())
-        .or_else(|| load_persisted_token(provider_tag))
-        .unwrap_or_else(|| refresh_token.to_string());
+    // Try reading the creds file
+    let creds_result = std::fs::read_to_string(&creds_path)
+        .ok()
+        .and_then(|content| serde_json::from_str::<OAuthCredsFile>(&content).ok());
 
-    debug!("Refreshing DashScope access token");
+    let resolved = match creds_result {
+        Some(mut creds) => {
+            let now = now_millis();
+            let buffer_ms = TOKEN_REFRESH_BUFFER_SECS * 1000;
 
-    let token_url = format!("{}{}", config_base_url.trim_end_matches('/'), TOKEN_PATH);
+            if creds.expiry_date > now + buffer_ms {
+                // Access token is still valid — use directly
+                let base_url = base_url_from_resource(&creds.resource_url);
+                info!(
+                    provider = provider_tag,
+                    base_url = %base_url,
+                    expires_in_secs = (creds.expiry_date - now) / 1000,
+                    "Using existing DashScope access token"
+                );
+
+                let remaining_ms = creds.expiry_date - now - buffer_ms;
+                let expires_at = Instant::now() + Duration::from_millis(remaining_ms);
+
+                guard.insert(
+                    cache_key,
+                    TokenCache {
+                        access_token: creds.access_token.clone(),
+                        base_url: base_url.clone(),
+                        expires_at,
+                    },
+                );
+
+                return Ok(ResolvedToken {
+                    access_token: creds.access_token,
+                    base_url,
+                });
+            }
+
+            // Access token expired — try refresh
+            match refresh_access_token(http, provider_tag, &mut creds, &creds_path).await {
+                Ok(r) => r,
+                Err(e) => {
+                    warn!(
+                        provider = provider_tag,
+                        error = %e,
+                        "Token refresh failed, starting device code OAuth flow"
+                    );
+                    device_code_auth(http, provider_tag, &creds_path).await?
+                }
+            }
+        }
+        None => {
+            // No creds file → device code flow
+            info!(
+                provider = provider_tag,
+                path = %creds_path.display(),
+                "OAuth creds file not found, starting device code OAuth flow"
+            );
+            device_code_auth(http, provider_tag, &creds_path).await?
+        }
+    };
+
+    guard.insert(
+        cache_key,
+        TokenCache {
+            access_token: resolved.access_token.clone(),
+            base_url: resolved.base_url.clone(),
+            expires_at: resolved.expires_at,
+        },
+    );
+
+    Ok(ResolvedToken {
+        access_token: resolved.access_token,
+        base_url: resolved.base_url,
+    })
+}
+
+/// Internal result that also carries the cache expiry.
+struct ResolvedTokenWithExpiry {
+    access_token: String,
+    base_url: String,
+    expires_at: Instant,
+}
+
+/// Refresh the access_token using the refresh_token.
+/// On success, writes updated creds to disk.
+async fn refresh_access_token(
+    http: &reqwest::Client,
+    provider_tag: &str,
+    creds: &mut OAuthCredsFile,
+    creds_path: &PathBuf,
+) -> anyhow::Result<ResolvedTokenWithExpiry> {
+    debug!(provider = provider_tag, "Refreshing DashScope access token");
+
+    let token_url = format!("{}{}", OAUTH_BASE_URL, TOKEN_PATH);
 
     let form_body = format!(
         "grant_type=refresh_token&refresh_token={}&client_id={}",
-        urlencoded(&current_refresh),
+        urlencoded(&creds.refresh_token),
         urlencoded(OAUTH_CLIENT_ID),
     );
 
@@ -203,28 +281,15 @@ pub async fn ensure_access_token(
         .get("refresh_token")
         .and_then(|v| v.as_str())
         .map(String::from)
-        .unwrap_or(current_refresh);
+        .unwrap_or_else(|| creds.refresh_token.clone());
 
     let resource_url = data
         .get("resource_url")
         .and_then(|v| v.as_str())
-        .map(String::from);
+        .map(String::from)
+        .unwrap_or_else(|| creds.resource_url.clone());
 
-    let base_url = match resource_url {
-        Some(url) => {
-            let normalized = if url.starts_with("http") {
-                url
-            } else {
-                format!("https://{}", url)
-            };
-            if normalized.ends_with("/v1") {
-                normalized
-            } else {
-                format!("{}/v1", normalized)
-            }
-        }
-        None => config_base_url.trim_end_matches('/').to_string(),
-    };
+    let base_url = base_url_from_resource(&resource_url);
 
     let expires_at =
         Instant::now() + Duration::from_secs(expires_in.saturating_sub(TOKEN_REFRESH_BUFFER_SECS));
@@ -236,28 +301,275 @@ pub async fn ensure_access_token(
         "DashScope access token refreshed"
     );
 
-    // Persist the rotated refresh_token so it survives restarts.
-    save_persisted_token(provider_tag, &new_refresh);
+    // Write updated creds back to file
+    creds.access_token = access_token.clone();
+    creds.refresh_token = new_refresh;
+    creds.resource_url = resource_url;
+    creds.expiry_date = now_millis() + expires_in * 1000;
+    write_creds_file(creds_path, creds);
 
-    let result = ResolvedToken {
-        access_token: access_token.clone(),
-        base_url: base_url.clone(),
-    };
-
-    *guard = Some(TokenCache {
+    Ok(ResolvedTokenWithExpiry {
         access_token,
         base_url,
         expires_at,
-        refresh_token: new_refresh,
-    });
+    })
+}
 
-    Ok(result)
+// ─── Device Code OAuth Flow (RFC 8628) ─────────────────────────────────────
+
+/// Generate a PKCE code_verifier and code_challenge (S256).
+fn generate_pkce_pair() -> (String, String) {
+    use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+    use rand::Rng;
+
+    let mut verifier_bytes = [0u8; 32];
+    rand::rng().fill_bytes(&mut verifier_bytes);
+    let code_verifier = URL_SAFE_NO_PAD.encode(verifier_bytes);
+
+    let mut hasher = Sha256::new();
+    hasher.update(code_verifier.as_bytes());
+    let digest = hasher.finalize();
+    let code_challenge = URL_SAFE_NO_PAD.encode(digest);
+
+    (code_verifier, code_challenge)
+}
+
+/// Response from the device authorization endpoint.
+#[derive(Debug, Deserialize)]
+struct DeviceAuthResponse {
+    device_code: String,
+    user_code: String,
+    verification_uri: String,
+    #[serde(default)]
+    verification_uri_complete: Option<String>,
+    expires_in: u64,
+}
+
+/// Run the full device code OAuth flow:
+/// 1. Request device code with PKCE
+/// 2. Open browser for user authorization
+/// 3. Poll for token
+/// 4. Write creds to file
+async fn device_code_auth(
+    http: &reqwest::Client,
+    provider_tag: &str,
+    creds_path: &PathBuf,
+) -> anyhow::Result<ResolvedTokenWithExpiry> {
+    let (code_verifier, code_challenge) = generate_pkce_pair();
+
+    // Step 1: Request device authorization
+    let device_url = format!("{}{}", OAUTH_BASE_URL, DEVICE_CODE_PATH);
+    let form_body = format!(
+        "client_id={}&scope={}&code_challenge={}&code_challenge_method=S256",
+        urlencoded(OAUTH_CLIENT_ID),
+        urlencoded(OAUTH_SCOPE),
+        urlencoded(&code_challenge),
+    );
+
+    let resp = http
+        .post(&device_url)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .header("Accept", "application/json")
+        .body(form_body)
+        .send()
+        .await
+        .context("DashScope device code request failed")?;
+
+    let status = resp.status();
+    let resp_bytes = resp.bytes().await?;
+    if !status.is_success() {
+        let body_text = String::from_utf8_lossy(&resp_bytes);
+        anyhow::bail!(
+            "DashScope device code request failed ({}): {}",
+            status,
+            body_text
+        );
+    }
+
+    let device_auth: DeviceAuthResponse =
+        serde_json::from_slice(&resp_bytes).context("Failed to parse device code response")?;
+
+    // Step 2: Print URL for user to open manually
+    let auth_url = device_auth
+        .verification_uri_complete
+        .as_deref()
+        .unwrap_or(&device_auth.verification_uri);
+
+    info!(
+        provider = provider_tag,
+        user_code = %device_auth.user_code,
+        url = %auth_url,
+        "DashScope OAuth: please open the URL in your browser to authorize"
+    );
+
+    // Step 3: Poll for token
+    let token_url = format!("{}{}", OAUTH_BASE_URL, TOKEN_PATH);
+    let deadline = Instant::now() + Duration::from_secs(device_auth.expires_in);
+    let mut interval = Duration::from_secs(DEVICE_CODE_POLL_INTERVAL_SECS);
+
+    loop {
+        if Instant::now() > deadline {
+            anyhow::bail!("DashScope device code authorization timed out");
+        }
+
+        tokio::time::sleep(interval).await;
+
+        let poll_body = format!(
+            "grant_type={}&client_id={}&device_code={}&code_verifier={}",
+            urlencoded(DEVICE_CODE_GRANT_TYPE),
+            urlencoded(OAUTH_CLIENT_ID),
+            urlencoded(&device_auth.device_code),
+            urlencoded(&code_verifier),
+        );
+
+        let resp = http
+            .post(&token_url)
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .header("Accept", "application/json")
+            .body(poll_body)
+            .send()
+            .await;
+
+        let resp = match resp {
+            Ok(r) => r,
+            Err(e) => {
+                warn!(error = %e, "DashScope token poll network error, retrying");
+                continue;
+            }
+        };
+
+        let poll_status = resp.status();
+        let poll_bytes = resp.bytes().await.unwrap_or_default();
+        let poll_data: Value =
+            serde_json::from_slice(&poll_bytes).unwrap_or(Value::Object(Default::default()));
+
+        if poll_status.is_success()
+            && let Some(access_token) = poll_data.get("access_token").and_then(|v| v.as_str())
+        {
+            let expires_in = poll_data
+                .get("expires_in")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(3600);
+
+            let refresh_token = poll_data
+                .get("refresh_token")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            let resource_url = poll_data
+                .get("resource_url")
+                .and_then(|v| v.as_str())
+                .unwrap_or("dashscope.aliyuncs.com/compatible-mode")
+                .to_string();
+
+            let token_type = poll_data
+                .get("token_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Bearer")
+                .to_string();
+
+            let base_url = base_url_from_resource(&resource_url);
+            let expiry_date = now_millis() + expires_in * 1000;
+
+            let creds = OAuthCredsFile {
+                access_token: access_token.to_string(),
+                token_type: Some(token_type),
+                refresh_token,
+                resource_url,
+                expiry_date,
+            };
+
+            // Ensure parent directory exists
+            if let Some(parent) = creds_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            write_creds_file(creds_path, &creds);
+
+            info!(
+                provider = provider_tag,
+                base_url = %base_url,
+                expires_in = expires_in,
+                "DashScope OAuth device flow completed successfully"
+            );
+
+            let expires_at = Instant::now()
+                + Duration::from_secs(expires_in.saturating_sub(TOKEN_REFRESH_BUFFER_SECS));
+
+            return Ok(ResolvedTokenWithExpiry {
+                access_token: access_token.to_string(),
+                base_url,
+                expires_at,
+            });
+        }
+
+        // Check error type for retry logic (RFC 8628)
+        let error_code = poll_data
+            .get("error")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        match error_code {
+            "authorization_pending" => {
+                debug!("DashScope device code: authorization pending, continuing to poll");
+            }
+            "slow_down" => {
+                let new_secs = (interval.as_millis() as u64 * 3 / 2 / 1000)
+                    .min(DEVICE_CODE_MAX_POLL_INTERVAL_SECS);
+                interval = Duration::from_secs(new_secs.max(1));
+                debug!(
+                    interval_secs = interval.as_secs(),
+                    "DashScope device code: slow_down, increased poll interval"
+                );
+            }
+            "expired_token" | "access_denied" => {
+                anyhow::bail!("DashScope device code authorization failed: {}", error_code);
+            }
+            _ => {
+                let desc = poll_data
+                    .get("error_description")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown error");
+                warn!(
+                    error = error_code,
+                    description = desc,
+                    status = %poll_status,
+                    "DashScope device code poll unexpected response, retrying"
+                );
+            }
+        }
+    }
+}
+
+/// Pre-flight check for DashScope OAuth credentials.
+///
+/// Called at startup. Reads the creds file, attempts a token refresh if the
+/// access_token is expired, and triggers the device code flow if the creds
+/// file is missing or the refresh_token is invalid. The result is cached so
+/// subsequent `ensure_access_token` calls are instant.
+pub async fn preflight_check(
+    http: &reqwest::Client,
+    provider_tag: &str,
+    oauth_creds_path: &str,
+) -> anyhow::Result<()> {
+    ensure_access_token(http, provider_tag, oauth_creds_path).await?;
+    Ok(())
+}
+
+/// Write the OAuth credentials to disk.
+fn write_creds_file(path: &PathBuf, creds: &OAuthCredsFile) {
+    if let Ok(json) = serde_json::to_string_pretty(creds)
+        && let Err(e) = std::fs::write(path, json)
+    {
+        warn!(error = %e, path = %path.display(), "Failed to write OAuth creds file");
+    }
 }
 
 // ─── Conversion: DashScope inbound → Unified ──────────────────────────────
 // DashScope channel accepts OpenAI-compatible format, so decoding is similar
 // to OpenAI but we also handle DashScope-specific content types.
 
+#[allow(dead_code)]
 pub async fn decode_request(body: &Bytes, origin_provider: &str) -> anyhow::Result<UnifiedRequest> {
     use crate::filesystem;
 
@@ -363,6 +675,7 @@ pub async fn decode_request(body: &Bytes, origin_provider: &str) -> anyhow::Resu
     })
 }
 
+#[allow(dead_code)]
 fn parse_dashscope_content(val: Option<&Value>) -> MessageContent {
     match val {
         Some(Value::String(s)) => MessageContent::Text(s.clone()),
@@ -578,11 +891,13 @@ fn extra_headers() -> Vec<(&'static str, String)> {
 // We reuse the OpenAI streaming format. The functions below handle the
 // DashScope-specific quirks when *parsing* from upstream.
 
+#[allow(dead_code)]
 pub fn format_stream_event(event: &StreamEvent, model: &str, request_id: &str) -> String {
     // DashScope channel output is OpenAI-compatible
     crate::protocols::openai::format_stream_event(event, model, request_id)
 }
 
+#[allow(dead_code)]
 pub fn format_full_response(text: &str, model: &str, request_id: &str) -> Value {
     crate::protocols::openai::format_full_response(text, model, request_id)
 }
@@ -675,7 +990,11 @@ mod tests {
         };
 
         let http = reqwest::Client::new();
-        let resolved = ensure_access_token(&http, &ds.tag, &ds.api_key, &ds.base_url)
+        let creds_path = ds
+            .oauth_creds_path
+            .as_deref()
+            .expect("DashScope provider missing oauth_creds_path");
+        let resolved = ensure_access_token(&http, &ds.tag, creds_path)
             .await
             .expect("token refresh should succeed");
 

@@ -1,12 +1,13 @@
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::path::Path;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
     pub log: LogConfig,
+    pub service: ServiceConfig,
     pub providers: Vec<ProviderConfig>,
-    pub channels: Vec<ChannelConfig>,
-    pub routes: Vec<RouteConfig>,
+    pub models: HashMap<String, Vec<ProviderMapping>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -15,39 +16,36 @@ pub struct LogConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct ServiceConfig {
+    pub uds: String,
+    pub tcp: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct ProviderConfig {
     pub tag: String,
     #[serde(rename = "type")]
     pub provider_type: ProtocolType,
-    pub api_key: String,
-    pub base_url: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct ChannelConfig {
-    #[serde(rename = "type")]
-    pub channel_type: ProtocolType,
-    pub tag: String,
-    pub port: u16,
-    pub api_key: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct RouteConfig {
-    /// Which channel tags this route applies to. If absent, matches all channels.
+    /// API key for OpenAI-compatible providers.
     #[serde(default)]
-    pub channel: Vec<String>,
-    /// Keyword matching against user message content.
+    pub api_key: Option<String>,
+    /// Base URL for OpenAI / Anthropic providers.
     #[serde(default)]
-    pub keywords: Vec<String>,
-    /// Ordered list of provider+model to try.
-    pub select: Vec<SelectConfig>,
+    pub base_url: Option<String>,
+    /// Auth token for Anthropic providers (sent as x-api-key header).
+    #[serde(default)]
+    pub auth_token: Option<String>,
+    /// Path to OAuth credentials JSON file for DashScope providers.
+    /// Supports ~ expansion. The file contains access_token, refresh_token,
+    /// resource_url, and expiry_date.
+    #[serde(default)]
+    pub oauth_creds_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct SelectConfig {
+pub struct ProviderMapping {
     pub provider: String,
-    pub model: String,
+    pub model_id: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]

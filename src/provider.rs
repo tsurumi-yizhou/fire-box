@@ -1,4 +1,4 @@
-use crate::config::{ProtocolType, ProviderConfig, SelectConfig};
+use crate::config::{ProtocolType, ProviderConfig};
 use crate::protocol::{StreamEvent, UnifiedRequest};
 /// Upstream provider client.
 /// Sends requests to LLM providers and returns responses (streaming or full).
@@ -12,7 +12,11 @@ use tracing::{debug, warn};
 // ─── Protocol dispatch helpers ──────────────────────────────────────────────
 
 fn build_url(provider: &ProviderConfig) -> String {
-    let base = provider.base_url.trim_end_matches('/');
+    let base = provider
+        .base_url
+        .as_deref()
+        .unwrap_or("")
+        .trim_end_matches('/');
     let path = match provider.provider_type {
         ProtocolType::OpenAI => openai::endpoint_path(),
         ProtocolType::Anthropic => anthropic::endpoint_path(),
@@ -22,20 +26,20 @@ fn build_url(provider: &ProviderConfig) -> String {
 }
 
 /// Resolve the actual URL and auth headers for a provider.
-/// For DashScope this exchanges the refresh_token for a short-lived access_token.
+/// For DashScope this reads the OAuth creds file and refreshes if needed.
 async fn resolve_request(
     http: &reqwest::Client,
     provider: &ProviderConfig,
 ) -> anyhow::Result<(String, Vec<(&'static str, String)>)> {
     match provider.provider_type {
         ProtocolType::DashScope => {
-            let resolved = dashscope::ensure_access_token(
-                http,
-                &provider.tag,
-                &provider.api_key,
-                &provider.base_url,
-            )
-            .await?;
+            let creds_path = provider.oauth_creds_path.as_deref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "DashScope provider '{}' missing oauth_creds_path",
+                    provider.tag
+                )
+            })?;
+            let resolved = dashscope::ensure_access_token(http, &provider.tag, creds_path).await?;
             let url = format!(
                 "{}{}",
                 resolved.base_url.trim_end_matches('/'),
@@ -47,8 +51,14 @@ async fn resolve_request(
         _ => {
             let url = build_url(provider);
             let headers = match provider.provider_type {
-                ProtocolType::OpenAI => openai::request_headers(&provider.api_key),
-                ProtocolType::Anthropic => anthropic::request_headers(&provider.api_key),
+                ProtocolType::OpenAI => {
+                    let key = provider.api_key.as_deref().unwrap_or("");
+                    openai::request_headers(key)
+                }
+                ProtocolType::Anthropic => {
+                    let token = provider.auth_token.as_deref().unwrap_or("");
+                    anthropic::request_headers(token)
+                }
                 ProtocolType::DashScope => unreachable!(),
             };
             Ok((url, headers))
@@ -275,83 +285,6 @@ fn parse_next_anthropic_sse(buffer: &mut String) -> Option<(String, String)> {
         return None;
     }
     Some((event_type, data))
-}
-
-/// Try each candidate in order. Returns (provider_tag, model, result).
-pub async fn try_candidates(
-    http: &reqwest::Client,
-    providers: &[ProviderConfig],
-    candidates: &[SelectConfig],
-    request: &UnifiedRequest,
-) -> anyhow::Result<(String, String, String)> {
-    let mut last_err = anyhow::anyhow!("No candidates available");
-
-    for candidate in candidates {
-        let provider = providers.iter().find(|p| p.tag == candidate.provider);
-        let provider = match provider {
-            Some(p) => p,
-            None => {
-                warn!(provider = %candidate.provider, "Provider not found, skipping");
-                continue;
-            }
-        };
-
-        match send_request(http, provider, &candidate.model, request).await {
-            Ok(text) => {
-                return Ok((candidate.provider.clone(), candidate.model.clone(), text));
-            }
-            Err(e) => {
-                warn!(
-                    provider = %candidate.provider,
-                    model = %candidate.model,
-                    error = %e,
-                    "Provider failed, trying next"
-                );
-                last_err = e;
-            }
-        }
-    }
-
-    Err(last_err)
-}
-
-/// Try each candidate in order for streaming. Returns the event receiver +
-/// provider/model info for the first successful connection.
-pub async fn try_candidates_stream(
-    http: &reqwest::Client,
-    providers: &[ProviderConfig],
-    candidates: &[SelectConfig],
-    request: &UnifiedRequest,
-) -> anyhow::Result<(String, String, mpsc::Receiver<StreamEvent>)> {
-    let mut last_err = anyhow::anyhow!("No candidates available");
-
-    for candidate in candidates {
-        let provider = providers.iter().find(|p| p.tag == candidate.provider);
-        let provider = match provider {
-            Some(p) => p,
-            None => {
-                warn!(provider = %candidate.provider, "Provider not found, skipping");
-                continue;
-            }
-        };
-
-        match send_stream_request(http, provider, &candidate.model, request).await {
-            Ok(rx) => {
-                return Ok((candidate.provider.clone(), candidate.model.clone(), rx));
-            }
-            Err(e) => {
-                warn!(
-                    provider = %candidate.provider,
-                    model = %candidate.model,
-                    error = %e,
-                    "Streaming provider failed, trying next"
-                );
-                last_err = e;
-            }
-        }
-    }
-
-    Err(last_err)
 }
 
 // previously provided `collect_stream` helper was removed as it was unused.

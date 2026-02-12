@@ -36,3 +36,15 @@ pub async fn get_file(file_id: &str) -> Option<StoredFile> {
     let store = file_store().read().await;
     store.get(file_id).cloned()
 }
+
+/// List all stored files.
+pub async fn list_files() -> Vec<(String, StoredFile)> {
+    let store = file_store().read().await;
+    store.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+}
+
+/// Delete a file by its ID. Returns true if the file existed.
+pub async fn delete_file(file_id: &str) -> bool {
+    let mut store = file_store().write().await;
+    store.remove(file_id).is_some()
+}

@@ -16,7 +16,7 @@ pub async fn decode_request(body: &Bytes, origin_provider: &str) -> anyhow::Resu
         .and_then(|m| m.as_str())
         .unwrap_or("unknown")
         .to_string();
-    let stream = v.get("stream").and_then(|s| s.as_bool()).unwrap_or(false);
+    let stream = v.get("stream").and_then(|s| s.as_bool()).unwrap_or(true);
     let max_tokens = v.get("max_tokens").and_then(|m| m.as_u64());
     let temperature = v.get("temperature").and_then(|t| t.as_f64());
 
