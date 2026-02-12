@@ -16,9 +16,12 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use bytes::Bytes;
-use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::net::{TcpListener, UnixListener};
+use tokio::net::TcpListener;
+#[cfg(unix)]
+use tokio::net::UnixListener;
+#[cfg(unix)]
+use std::path::PathBuf;
 use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 use uuid::Uuid;
@@ -66,31 +69,39 @@ pub fn launch_all(
         )
         .route("/v1/files/{file_id}/content", get(get_file_content));
 
-    // 1. Unix socket (both protocols)
-    let uds_path = PathBuf::from(shellexpand::tilde(&config.service.uds).as_ref());
+    // 1. Unix socket (both protocols) - Unix only
+    #[cfg(unix)]
+    {
+        let uds_path = PathBuf::from(shellexpand::tilde(&config.service.uds).as_ref());
 
-    // Ensure parent directory exists
-    if let Some(parent) = uds_path.parent() {
-        std::fs::create_dir_all(parent)?;
+        // Ensure parent directory exists
+        if let Some(parent) = uds_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        // Remove old socket if exists
+        let _ = std::fs::remove_file(&uds_path);
+
+        let uds_state = state.clone();
+        let uds_router = router.clone();
+        let uds_path_display = uds_path.clone();
+        handles.push(tokio::spawn(async move {
+            info!(socket = %uds_path_display.display(), "Starting Unix socket");
+            match UnixListener::bind(&uds_path) {
+                Ok(listener) => {
+                    let _ = axum::serve(listener, uds_router.with_state(uds_state).into_make_service()).await;
+                }
+                Err(e) => {
+                    error!(socket = %uds_path_display.display(), error = %e, "Failed to bind Unix socket")
+                }
+            }
+        }));
     }
 
-    // Remove old socket if exists
-    let _ = std::fs::remove_file(&uds_path);
-
-    let uds_state = state.clone();
-    let uds_router = router.clone();
-    let uds_path_display = uds_path.clone();
-    handles.push(tokio::spawn(async move {
-        info!(socket = %uds_path_display.display(), "Starting Unix socket");
-        match UnixListener::bind(&uds_path) {
-            Ok(listener) => {
-                let _ = axum::serve(listener, uds_router.with_state(uds_state).into_make_service()).await;
-            }
-            Err(e) => {
-                error!(socket = %uds_path_display.display(), error = %e, "Failed to bind Unix socket")
-            }
-        }
-    }));
+    #[cfg(not(unix))]
+    {
+        warn!("Unix Domain Socket is not supported on this platform. Only TCP server will be started.");
+    }
 
     // 2. TCP server (both protocols)
     let tcp_addr = config.service.tcp.clone();

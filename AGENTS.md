@@ -9,8 +9,9 @@
 ### 架构概述
 
 - **服务模式**: 创建2个服务端点（在配置文件中指定）：
-  - Unix Socket: 可配置路径，支持 ~ 展开（默认 `/tmp/fire-box.sock`）
-  - TCP 端口: 可配置地址（默认 `localhost:3000`）
+  - Unix Socket: 可配置路径，支持 ~ 展开（默认 `/tmp/fire-box.sock`）**（仅限 Unix/Linux/macOS）**
+  - TCP 端口: 可配置地址（默认 `localhost:3000`）**（跨平台）**
+- **Windows 支持**: 在 Windows 上 Unix Socket 功能被禁用，仅启用 TCP 服务器
 - **协议支持**: 两个端点都通过路径区分协议，所有路径统一带 `/v1` 前缀：
   - OpenAI 协议：`/v1/chat/completions`（对话）、`/v1/models`（模型列表）、`/v1/embeddings`（嵌入）
   - Anthropic 协议：`/v1/messages`
@@ -83,7 +84,7 @@
 
 **配置说明**:
 - `service`: 服务端点配置
-  - `uds`: Unix socket 路径，支持 ~ 展开
+  - `uds`: Unix socket 路径，支持 ~ 展开（Windows 上此配置被忽略）
   - `tcp`: TCP 监听地址
 - `models` 现在是一个 HashMap，键为统一的模型标签（如 `gpt-5.2`）
 - 每个模型包含一个 provider 映射列表，按优先级排序
@@ -108,12 +109,12 @@
 
 1. 配置文件中定义 service、models 和 providers
 2. 启动服务：`./fire-box config.json`
-3. 服务创建2个端点：
-   - Unix Socket: 配置文件中指定的路径（两种协议，根据 path 区分）
-   - TCP: 配置文件中指定的地址（两种协议，根据 path 区分）
-4. 客户端通过任一端点连接，使用对应协议路径：
-   - `/chat/completions` - OpenAI 协议
-   - `/messages` - Anthropic 协议
+3. 服务创建端点（根据平台）：
+   - **Unix/Linux/macOS**: Unix Socket + TCP（两种协议，根据 path 区分）
+   - **Windows**: 仅 TCP（Unix Socket 不支持）
+4. 客户端通过端点连接，使用对应协议路径：
+   - `/v1/chat/completions` - OpenAI 协议
+   - `/v1/messages` - Anthropic 协议
 5. 网关从请求体的 `model` 字段查找配置，按优先级尝试 providers，支持 fallback
 
 -- 自动记录：状态由开发代理在工作区修改后写入。

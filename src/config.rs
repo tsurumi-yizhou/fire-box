@@ -17,6 +17,7 @@ pub struct LogConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ServiceConfig {
+    #[cfg_attr(not(unix), allow(dead_code))]
     pub uds: String,
     pub tcp: String,
 }
