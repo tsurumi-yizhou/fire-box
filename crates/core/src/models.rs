@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::collections::HashMap;
 
-/// 从 models.dev API 获取的原始数据结构
+/// Raw data structure returned by the models.dev API
 #[derive(Debug, Deserialize)]
 pub struct ModelsDevResponse {
     #[serde(flatten)]
@@ -15,7 +15,7 @@ pub struct ProviderData {
     pub models: HashMap<String, ModelMetadata>,
 }
 
-/// 从 API 获取的原始模型元数据
+/// Model metadata as returned by the API
 #[derive(Debug, Deserialize)]
 pub struct ModelMetadata {
     pub id: String,
@@ -47,7 +47,7 @@ pub struct ApiModalities {
     pub output: Vec<String>,
 }
 
-/// 转换后的模型能力信息
+/// Transformed model capability information
 #[derive(Debug, Clone)]
 pub struct ModelCapabilities {
     #[allow(dead_code)]
@@ -84,19 +84,19 @@ pub struct Modalities {
     pub pdf: bool,
 }
 
-/// 模型元数据仓库
+/// Model metadata registry
 #[derive(Debug, Default)]
 pub struct ModelRegistry {
     models: HashMap<String, ModelCapabilities>,
 }
 
 impl ModelRegistry {
-    /// 创建新的空仓库
+    /// Create a new empty registry
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// 从 models.dev API 下载并加载模型元数据
+    /// Download and load model metadata from models.dev API
     pub async fn load_from_models_dev() -> Result<Self> {
         let url = "https://models.dev/api.json";
 
@@ -112,7 +112,7 @@ impl ModelRegistry {
         Ok(Self::from_api_data(data))
     }
 
-    /// 从 API 数据构建仓库
+    /// Build the registry from API data
     fn from_api_data(data: ModelsDevResponse) -> Self {
         let mut models = HashMap::new();
 
@@ -148,17 +148,17 @@ impl ModelRegistry {
         Self { models }
     }
 
-    /// 根据模型 ID 查询模型元数据
+    /// Query model metadata by model ID
     pub fn get(&self, model_id: &str) -> Option<&ModelCapabilities> {
         self.models.get(model_id)
     }
 
-    /// 获取所有模型的数量
+    /// Get the number of models
     pub fn len(&self) -> usize {
         self.models.len()
     }
 
-    /// 检查是否为空
+    /// Check if the registry is empty
     #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.models.is_empty()
@@ -166,7 +166,7 @@ impl ModelRegistry {
 }
 
 impl Modalities {
-    /// 从字符串列表创建
+    /// Create from a list of strings
     fn from_string_list(list: &[String]) -> Self {
         Self {
             text: list.iter().any(|s| s == "text"),
@@ -214,7 +214,7 @@ mod tests {
         assert!(!registry.is_empty());
         println!("Loaded {} models", registry.len());
 
-        // 测试查找特定模型
+        // Test lookup of a specific model
         if let Some(model) = registry.get("gpt-5.2") {
             println!("Found model: {} ({})", model.name, model.id);
             println!("  Tool call: {}", model.capabilities.tool_call);

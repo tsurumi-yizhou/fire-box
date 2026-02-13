@@ -2,12 +2,15 @@ use crate::config::{ProtocolType, ProviderConfig};
 use crate::protocol::{StreamEvent, UnifiedRequest};
 /// Upstream provider client.
 /// Sends requests to LLM providers and returns responses (streaming or full).
-use crate::protocols::{anthropic, dashscope, openai};
+use crate::protocols::{anthropic, copilot, dashscope, openai};
 use anyhow::Context;
 use futures_util::StreamExt;
 use serde_json::Value;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
+
+/// Fixed URL for Copilot chat completions (not provider-configurable).
+const COPILOT_CHAT_URL: &str = "https://api.githubcopilot.com/chat/completions";
 
 // ─── Protocol dispatch helpers ──────────────────────────────────────────────
 
@@ -21,6 +24,7 @@ fn build_url(provider: &ProviderConfig) -> String {
         ProtocolType::OpenAI => openai::endpoint_path(),
         ProtocolType::Anthropic => anthropic::endpoint_path(),
         ProtocolType::DashScope => dashscope::endpoint_path(),
+        ProtocolType::Copilot => copilot::endpoint_path(),
     };
     format!("{}{}", base, path)
 }
@@ -30,6 +34,7 @@ fn build_url(provider: &ProviderConfig) -> String {
 async fn resolve_request(
     http: &reqwest::Client,
     provider: &ProviderConfig,
+    event_tx: Option<&tokio::sync::broadcast::Sender<crate::ipc::IpcEvent>>,
 ) -> anyhow::Result<(String, Vec<(&'static str, String)>)> {
     match provider.provider_type {
         ProtocolType::DashScope => {
@@ -39,7 +44,8 @@ async fn resolve_request(
                     provider.tag
                 )
             })?;
-            let resolved = dashscope::ensure_access_token(http, &provider.tag, creds_path).await?;
+            let resolved =
+                dashscope::ensure_access_token(http, &provider.tag, creds_path, event_tx).await?;
             let url = format!(
                 "{}{}",
                 resolved.base_url.trim_end_matches('/'),
@@ -48,18 +54,24 @@ async fn resolve_request(
             let headers = dashscope::request_headers(&resolved.access_token);
             Ok((url, headers))
         }
+        ProtocolType::Copilot => {
+            let session = copilot::ensure_session(http, &provider.tag).await?;
+            let url = COPILOT_CHAT_URL.to_string();
+            let headers = copilot::request_headers(&session);
+            Ok((url, headers))
+        }
         _ => {
             let url = build_url(provider);
             let headers = match provider.provider_type {
                 ProtocolType::OpenAI => {
-                    let key = provider.api_key.as_deref().unwrap_or("");
-                    openai::request_headers(key)
+                    let key = crate::keystore::get_provider_key(&provider.tag).unwrap_or_default();
+                    openai::request_headers(&key)
                 }
                 ProtocolType::Anthropic => {
-                    let token = provider.auth_token.as_deref().unwrap_or("");
-                    anthropic::request_headers(token)
+                    let token = crate::keystore::get_auth_token(&provider.tag).unwrap_or_default();
+                    anthropic::request_headers(&token)
                 }
-                ProtocolType::DashScope => unreachable!(),
+                ProtocolType::DashScope | ProtocolType::Copilot => unreachable!(),
             };
             Ok((url, headers))
         }
@@ -85,6 +97,7 @@ async fn encode_body(
         ProtocolType::OpenAI => openai::encode_request(req, model).await,
         ProtocolType::Anthropic => anthropic::encode_request(req, model).await,
         ProtocolType::DashScope => dashscope::encode_request(req, model).await,
+        ProtocolType::Copilot => copilot::encode_request(req, model).await,
     }
 }
 
@@ -93,6 +106,7 @@ fn parse_response(body: &[u8], protocol: ProtocolType) -> anyhow::Result<String>
         ProtocolType::OpenAI => openai::parse_full_response(body),
         ProtocolType::Anthropic => anthropic::parse_full_response(body),
         ProtocolType::DashScope => dashscope::parse_full_response(body),
+        ProtocolType::Copilot => copilot::parse_full_response(body),
     }
 }
 
@@ -104,12 +118,13 @@ pub async fn send_request(
     provider: &ProviderConfig,
     model: &str,
     request: &UnifiedRequest,
+    event_tx: Option<&tokio::sync::broadcast::Sender<crate::ipc::IpcEvent>>,
 ) -> anyhow::Result<String> {
     let mut req = request.clone();
     req.stream = false;
 
     let body = encode_body(&req, model, provider.provider_type).await?;
-    let (url, headers) = resolve_request(http, provider).await?;
+    let (url, headers) = resolve_request(http, provider, event_tx).await?;
     debug!(url = %url, provider = %provider.tag, model = %model, "Sending request");
 
     let builder = apply_resolved_headers(http.post(&url), &headers);
@@ -139,12 +154,13 @@ pub async fn send_stream_request(
     provider: &ProviderConfig,
     model: &str,
     request: &UnifiedRequest,
+    event_tx: Option<&tokio::sync::broadcast::Sender<crate::ipc::IpcEvent>>,
 ) -> anyhow::Result<mpsc::Receiver<StreamEvent>> {
     let mut req = request.clone();
     req.stream = true;
 
     let body = encode_body(&req, model, provider.provider_type).await?;
-    let (url, headers) = resolve_request(http, provider).await?;
+    let (url, headers) = resolve_request(http, provider, event_tx).await?;
     debug!(url = %url, provider = %provider.tag, model = %model, "Sending streaming request");
 
     let builder = apply_resolved_headers(http.post(&url), &headers);
@@ -217,6 +233,7 @@ async fn process_sse_buffer(
     match protocol {
         ProtocolType::OpenAI => process_line_sse(buffer, tx, openai::parse_stream_line).await,
         ProtocolType::DashScope => process_line_sse(buffer, tx, dashscope::parse_stream_line).await,
+        ProtocolType::Copilot => process_line_sse(buffer, tx, copilot::parse_stream_line).await,
         ProtocolType::Anthropic => process_event_sse(buffer, tx).await,
     }
 }
@@ -296,7 +313,7 @@ mod dashscope_tests {
     use crate::protocol::{MessageContent, UnifiedMessage};
 
     fn load_dashscope_provider() -> Option<ProviderConfig> {
-        let config = Config::load("config.json").ok()?;
+        let config = Config::load_from_keyring();
         config
             .providers
             .into_iter()
@@ -330,7 +347,7 @@ mod dashscope_tests {
         };
 
         let http = reqwest::Client::new();
-        let result = send_request(&http, &ds, "coder-model", &simple_request())
+        let result = send_request(&http, &ds, "coder-model", &simple_request(), None)
             .await
             .expect("non-streaming request should succeed");
 
@@ -349,7 +366,7 @@ mod dashscope_tests {
         };
 
         let http = reqwest::Client::new();
-        let mut rx = send_stream_request(&http, &ds, "coder-model", &simple_request())
+        let mut rx = send_stream_request(&http, &ds, "coder-model", &simple_request(), None)
             .await
             .expect("streaming request should succeed");
 
