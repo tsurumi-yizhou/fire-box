@@ -43,10 +43,10 @@ Stateful LLM API gateway with authentication and monitoring. Rust core plus plat
 cargo build --release
 ```
 
-### 2. Run daemon
+### 2. Run service
 
 ```sh
-./target/release/fire-box
+./target/release/fire-box-core
 ```
 
 On startup the service loads configuration from the OS keyring. On first run the configuration may be empty; the service will start and wait for the Native Layer to configure providers via IPC.

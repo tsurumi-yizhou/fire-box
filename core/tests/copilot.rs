@@ -7,8 +7,8 @@
 //! - Linux/macOS: `$XDG_CONFIG_HOME/github-copilot/hosts.json` or `apps.json`
 //!
 //! Get a GitHub token from: https://github.com/settings/tokens (requires 'read:user' scope)
-use fire_box_core::protocol::*;
-use fire_box_core::protocols::copilot;
+use core::protocol::*;
+use core::protocols::copilot;
 use reqwest::Client;
 use tracing::{info, warn};
 use tracing_subscriber;
@@ -32,7 +32,7 @@ async fn test_copilot_oauth() {
 
     let provider_tag = "Copilot-Test";
     // Clear any cached token from keyring to test fresh token loading
-    let _ = fire_box_core::keystore::delete_provider_key(provider_tag);
+    let _ = core::keystore::delete_provider_key(provider_tag);
 
     let session = copilot::ensure_session(&http, provider_tag)
         .await

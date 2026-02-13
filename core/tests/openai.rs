@@ -1,6 +1,6 @@
 //! OpenAI integration test (single-target).
-use fire_box_core::protocol::*;
-use fire_box_core::protocols::openai;
+use core::protocol::*;
+use core::protocols::openai;
 use reqwest::Client;
 use std::env;
 use tracing::info;

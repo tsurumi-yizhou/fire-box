@@ -1,6 +1,6 @@
 //! DashScope integration test (single-target, OAuth device flow).
-use fire_box_core::protocol::*;
-use fire_box_core::protocols::dashscope;
+use core::protocol::*;
+use core::protocols::dashscope;
 use reqwest::Client;
 use tokio::sync::broadcast;
 use tracing::{info, warn};
@@ -27,7 +27,7 @@ async fn test_dashscope_oauth() {
     tokio::spawn(async move {
         while let Ok(event) = event_rx.recv().await {
             match event {
-                fire_box_core::ipc::IpcEvent::OAuthOpenUrl {
+                core::ipc::IpcEvent::OAuthOpenUrl {
                     provider,
                     url,
                     user_code,

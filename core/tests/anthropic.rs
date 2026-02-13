@@ -1,6 +1,6 @@
 //! Anthropic integration test (single-target).
-use fire_box_core::protocol::*;
-use fire_box_core::protocols::anthropic;
+use core::protocol::*;
+use core::protocols::anthropic;
 use reqwest::Client;
 use std::env;
 use tracing::info;

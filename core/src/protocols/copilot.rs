@@ -275,7 +275,7 @@ pub async fn ensure_session(
 
                         return Ok(ResolvedSession {
                             session_token: resp.token,
-                           session_id,
+                            session_id,
                             machine_id,
                         });
                     }
@@ -283,7 +283,7 @@ pub async fn ensure_session(
                         // Both tokens failed — return original error with instructions.
                         return Err(e).context(
                             "Copilot token exchange failed. Your GitHub token may be revoked.\n\
-                             Please update your token in environment variables or config files."
+                             Please update your token in environment variables or config files.",
                         );
                     }
                 }
@@ -292,7 +292,7 @@ pub async fn ensure_session(
             // No alternative token available — return error.
             return Err(e).context(
                 "Copilot token exchange failed. Your GitHub token may be revoked.\n\
-                 Please update your token in environment variables or config files."
+                 Please update your token in environment variables or config files.",
             );
         }
     };
@@ -343,10 +343,7 @@ fn chrono_like_now() -> i64 {
 }
 
 /// Pre-flight check for Copilot: ensures we have a valid session token.
-pub async fn preflight_check(
-    http: &reqwest::Client,
-    provider_tag: &str,
-) -> anyhow::Result<()> {
+pub async fn preflight_check(http: &reqwest::Client, provider_tag: &str) -> anyhow::Result<()> {
     ensure_session(http, provider_tag).await?;
     Ok(())
 }
