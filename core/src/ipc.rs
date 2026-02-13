@@ -235,17 +235,17 @@ pub fn launch(state: &CoreState) -> anyhow::Result<tokio::task::JoinHandle<()>> 
         .route("/ipc/v1/providers", get(handle_list_providers))
         .route("/ipc/v1/providers", post(handle_add_provider))
         .route(
-            "/ipc/v1/providers/:tag",
+            "/ipc/v1/providers/{tag}",
             axum::routing::put(handle_update_provider),
         )
         .route(
-            "/ipc/v1/providers/:tag",
+            "/ipc/v1/providers/{tag}",
             axum::routing::delete(handle_delete_provider),
         )
         .route("/ipc/v1/models", get(handle_list_models))
         .route("/ipc/v1/models", post(handle_add_model))
         .route(
-            "/ipc/v1/models/:tag",
+            "/ipc/v1/models/{tag}",
             axum::routing::delete(handle_delete_model),
         )
         .route("/ipc/v1/settings", get(handle_get_settings))

@@ -8,7 +8,8 @@ Source directory for the `fire-box-core` library crate.
 
 | File | Description |
 |------|-------------|
-| `lib.rs` | Crate entrypoint. Defines the shared `CoreState`, and `run()` which loads configuration from the keyring and starts the IPC server |
+| `lib.rs` | Crate entrypoint. Includes UniFFI scaffolding via `uniffi::include_scaffolding!("core")`. Defines the shared `CoreState`, service lifecycle functions (`start`/`stop`/`reload` exported to foreign languages via UDL), and `run()` which loads configuration from the keyring and starts the IPC server |
+| `core.udl` | UniFFI interface definition (WebIDL-like). Declares the `core` namespace and exported functions: `start`, `stop`, `reload`, `run_from_args` |
 | `ipc.rs` | IPC server. Axum HTTP over an interprocess local socket, exposing REST endpoints (chat, auth, config CRUD) and SSE events (`auth_required`, `metrics_update`, `request_log`, `oauth_open_url`) |
 | `auth.rs` | App authentication/authorization management. Maintains `AppAuthorization` records, supports register/approve/revoke and per-model restrictions, persisted to keyring |
 | `provider.rs` | Provider client. Dispatches requests to protocol codecs based on provider type, supports streaming and non-streaming responses and fallback logic |

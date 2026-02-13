@@ -1,0 +1,56 @@
+name: Build Linux
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  core:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        components: clippy
+    - uses: actions/cache@v5
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          core/target/
+        key: ${{ runner.os }}-cargo-${{ hashFiles('core/Cargo.lock') }}
+    - name: Build core
+      run: cd core && cargo build --verbose
+    - name: Test core
+      run: cd core && cargo test --lib --verbose
+    - name: Clippy
+      run: cd core && cargo clippy -- -D warnings
+
+  linux:
+    needs: core
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+    - uses: dtolnay/rust-toolchain@stable
+    - uses: actions/cache@v5
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          core/target/
+        key: ${{ runner.os }}-cargo-${{ hashFiles('core/Cargo.lock') }}
+    - name: Build Rust core
+      run: cd core && cargo build
+    - name: Install Meson & deps
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y meson ninja-build
+    - name: Meson setup
+      run: cd linux && meson setup builddir
+    - name: Meson compile
+      run: cd linux && meson compile -C builddir

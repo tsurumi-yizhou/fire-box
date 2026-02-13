@@ -22,7 +22,8 @@ pub mod session;
 use config::Config;
 use models::ModelRegistry;
 use session::SessionManager;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
+use tokio::sync::watch;
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
@@ -41,20 +42,154 @@ pub struct CoreState {
     pub ipc_event_tx: tokio::sync::broadcast::Sender<ipc::IpcEvent>,
 }
 
-/// Start the core (no arguments required, loads from keyring).
-pub async fn run_from_args() -> anyhow::Result<()> {
-    run().await
+// ─── Service lifecycle (start / stop / reload) ─────────────────────────────
+
+/// Internal handle to the running service, stored in a global singleton.
+struct CoreHandle {
+    runtime: tokio::runtime::Runtime,
+    shutdown_tx: watch::Sender<bool>,
 }
 
-/// Start the core service.
-pub async fn run() -> anyhow::Result<()> {
+/// Global singleton holding the active service handle.
+static CORE_HANDLE: OnceLock<Mutex<Option<CoreHandle>>> = OnceLock::new();
+
+fn handle_mutex() -> &'static Mutex<Option<CoreHandle>> {
+    CORE_HANDLE.get_or_init(|| Mutex::new(None))
+}
+
+/// Start the Fire Box core service.
+///
+/// Creates a multi-threaded Tokio runtime, launches the IPC server, and
+/// **blocks the calling thread** until [`stop`] is called or the service
+/// errors out.
+///
+/// Returns 0 on success, 1 on error, 2 if already running.
+#[unsafe(no_mangle)]
+pub extern "C" fn fire_box_start() -> i32 {
+    // Build runtime first (before taking the lock) to avoid poisoning
+    // the mutex on failure.
+    let rt = match tokio::runtime::Runtime::new() {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("Failed to create tokio runtime: {e}");
+            return 1;
+        }
+    };
+
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+    {
+        let mut guard = handle_mutex().lock().expect("core handle mutex poisoned");
+        if guard.is_some() {
+            eprintln!("core is already running");
+            return 2;
+        }
+        *guard = Some(CoreHandle {
+            runtime: rt,
+            shutdown_tx,
+        });
+    }
+
+    // Borrow the runtime from the global handle to enter `block_on`.
+    // We keep the lock as short as possible — just grab a reference and
+    // enter into `block_on` which will park this thread.
+    let result = {
+        let guard = handle_mutex().lock().expect("core handle mutex poisoned");
+        let handle = guard.as_ref().unwrap();
+        let rt_handle = handle.runtime.handle().clone();
+        drop(guard); // release lock before blocking
+
+        // Enter the runtime context so we can block_on.
+        let _enter = rt_handle.enter();
+        rt_handle.block_on(run(shutdown_rx))
+    };
+
+    // Service finished — clean up.
+    let mut guard = handle_mutex().lock().expect("core handle mutex poisoned");
+    *guard = None;
+
+    match result {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("core error: {e}");
+            1
+        }
+    }
+}
+
+/// Signal the running core to shut down gracefully.
+///
+/// Returns immediately. The [`start`] call will unblock shortly after.
+/// Returns 0 on success, 1 if not running.
+#[unsafe(no_mangle)]
+pub extern "C" fn fire_box_stop() -> i32 {
+    let guard = handle_mutex().lock().expect("core handle mutex poisoned");
+    match guard.as_ref() {
+        Some(h) => {
+            let _ = h.shutdown_tx.send(true);
+            0
+        }
+        None => {
+            eprintln!("core is not running");
+            1
+        }
+    }
+}
+
+/// Reload configuration from the OS keyring without restarting.
+///
+/// The running IPC server picks up the new configuration immediately.
+/// Returns 0 on success, 1 if not running.
+#[unsafe(no_mangle)]
+pub extern "C" fn fire_box_reload() -> i32 {
+    let guard = handle_mutex().lock().expect("core handle mutex poisoned");
+    match guard.as_ref() {
+        Some(h) => {
+            h.runtime.handle().block_on(async {
+                info!("reloading configuration from keyring");
+            });
+            // The actual reload is done inside the runtime so we can access
+            // the CORE_STATE that was stored during start().
+            h.runtime.handle().block_on(reload_inner());
+            0
+        }
+        None => {
+            eprintln!("core is not running");
+            1
+        }
+    }
+}
+
+/// Stored reference to the live `CoreState` so `reload()` can reach it.
+static CORE_STATE: OnceLock<CoreState> = OnceLock::new();
+
+async fn reload_inner() {
+    if let Some(state) = CORE_STATE.get() {
+        let new_config = Config::load_from_keyring();
+        info!(
+            providers = new_config.providers.len(),
+            models = new_config.models.len(),
+            "Configuration reloaded from keyring"
+        );
+        let mut cfg = state.config.write().await;
+        *cfg = new_config;
+    }
+}
+
+/// Legacy entry point — calls [`fire_box_start`].
+pub fn run_from_args() -> i32 {
+    fire_box_start()
+}
+
+/// Start the core service (async inner).
+async fn run(mut shutdown_rx: watch::Receiver<bool>) -> anyhow::Result<()> {
     // Load configuration from OS keyring.
     let config = Config::load_from_keyring();
 
-    // Init logging.
+    // Init logging (ignore error on re-init after restart).
     let filter =
         EnvFilter::try_new(&config.settings.log_level).unwrap_or_else(|_| EnvFilter::new("info"));
-    tracing_subscriber::fmt().with_env_filter(filter).init();
+    let _ = tracing_subscriber::fmt().with_env_filter(filter).try_init();
 
     info!("fire-box core starting (keyring-based configuration)");
     info!(
@@ -133,13 +268,23 @@ pub async fn run() -> anyhow::Result<()> {
         ipc_event_tx: ipc_event_tx.clone(),
     };
 
+    // Store a reference for reload().
+    let _ = CORE_STATE.set(core_state.clone());
+
     // Launch IPC server only (no HTTP gateway).
     let ipc_handle = ipc::launch(&core_state)?;
 
     info!("IPC server started, ready to accept requests from native layer");
 
-    // Wait for IPC server.
-    let _ = ipc_handle.await;
+    // Wait for either the shutdown signal or the IPC server to exit.
+    tokio::select! {
+        _ = shutdown_rx.wait_for(|&v| v) => {
+            info!("shutdown signal received, stopping core");
+        }
+        _ = ipc_handle => {
+            info!("IPC server exited");
+        }
+    }
 
     Ok(())
 }

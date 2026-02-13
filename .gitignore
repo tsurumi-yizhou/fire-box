@@ -1,5 +1,6 @@
 /ref
 /target
+core/target
 .dashscope_refresh_token_*
 **/.DS_Store
 **/Thumbs.db
@@ -14,3 +15,4 @@
 
 /config.json
 /Cargo.lock
+/generated/

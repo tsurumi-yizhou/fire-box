@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+      Fire Box — macOS LaunchDaemon / LaunchAgent configuration.
+
+      Install to:
+        ~/Library/LaunchAgents/com.firebox.agent.plist   (user agent)
+        /Library/LaunchDaemons/com.firebox.daemon.plist  (system daemon)
+
+      Load:
+        launchctl load ~/Library/LaunchAgents/com.firebox.agent.plist
+    -->
+
+    <key>Label</key>
+    <string>com.firebox.agent</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/fire-box-macos</string>
+    </array>
+
+    <!-- Start automatically at login. -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Restart if it crashes. -->
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <!-- Register an XPC Mach service name so client apps can look us up. -->
+    <key>MachServices</key>
+    <dict>
+        <key>com.firebox.xpc</key>
+        <true/>
+    </dict>
+
+    <!-- Logging -->
+    <key>StandardOutPath</key>
+    <string>/tmp/fire-box.stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/fire-box.stderr.log</string>
+
+    <!-- Sensible resource limits. -->
+    <key>ProcessType</key>
+    <string>Interactive</string>
+    <key>LowPriorityIO</key>
+    <false/>
+</dict>
+</plist>
