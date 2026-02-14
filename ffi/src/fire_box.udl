@@ -1,0 +1,89 @@
+/* Fire Box FFI interface definition */
+
+namespace fire_box {
+    [Throws=FireBoxError]
+    FireBox create_gateway();
+};
+
+enum ProviderType {
+    "OpenAI",
+    "Anthropic",
+    "DashScope",
+    "Copilot"
+};
+
+[Error]
+enum FireBoxError {
+    "InitializationFailed",
+    "ConfigurationError",
+    "ProviderError",
+    "AuthError",
+    "NetworkError",
+    "InternalError"
+};
+
+dictionary ProviderInfo {
+    string tag;
+    ProviderType provider_type;
+    string? base_url;
+    string? oauth_creds_path;
+};
+
+dictionary ProviderMapping {
+    string provider;
+    string model_id;
+};
+
+dictionary MetricsSnapshot {
+    u64 total_requests;
+    u64 total_input_tokens;
+    u64 total_output_tokens;
+    u64 total_errors;
+    u64 active_connections;
+    string per_model_json;
+    string per_provider_json;
+    string per_app_json;
+};
+
+dictionary AppInfo {
+    string app_id;
+    string? app_name;
+    boolean approved;
+    u64 created_at;
+};
+
+dictionary ModelMapping {
+    string model_tag;
+    string provider_tag;
+    string provider_model;
+};
+
+interface FireBox {
+    [Throws=FireBoxError]
+    sequence<ProviderInfo> list_providers();
+    [Throws=FireBoxError]
+    void add_provider(
+        string tag,
+        ProviderType provider_type,
+        string? api_key,
+        string? base_url
+    );
+    [Throws=FireBoxError]
+    void remove_provider(string tag);
+    [Throws=FireBoxError]
+    sequence<ModelMapping> list_models();
+    [Throws=FireBoxError]
+    void add_model_mapping(
+        string model_tag,
+        string provider_tag,
+        string provider_model
+    );
+    [Throws=FireBoxError]
+    void remove_model_mapping(string model_tag);
+    [Throws=FireBoxError]
+    sequence<AppInfo> list_apps();
+    [Throws=FireBoxError]
+    void revoke_app(string app_id);
+    [Throws=FireBoxError]
+    MetricsSnapshot get_metrics();
+};

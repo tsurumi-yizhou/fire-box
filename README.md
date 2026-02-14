@@ -1,33 +1,34 @@
 # Fire Box
 
-Stateful LLM API gateway with authentication and monitoring. Rust core plus platform-native layers (Swift/C++).
+Stateful LLM API gateway with authentication and monitoring. Pure Rust workspace with CLI and FFI bindings.
 
 ## Features
 
 - **Multi-protocol support**: OpenAI, Anthropic, DashScope (Qwen), GitHub Copilot
-- **IPC architecture**: All requests use an interprocess local socket (named pipes / UDS); no public HTTP port is exposed
-- **OAuth flows**: DashScope (PKCE) and Copilot (GitHub device code) automation paths
-- **Secure storage**: Configuration and credentials are persisted in the OS keyring (Windows Credential Manager / macOS Keychain / Linux Secret Service)
-- **App authorization**: Native Layer intercepts local app requests; user approval is required before an app may call the gateway
-- **Real-time metrics**: Token usage, request counts, active connections, broken down by model/provider/app
-- **Streaming**: SSE event streams for chat, metrics, auth, and OAuth notifications
+- **Local HTTP gateway**: OpenAI and Anthropic-compatible API endpoints
+- **OAuth flows**: DashScope (PKCE) and Copilot (GitHub device code) automation
+- **Secure storage**: Configuration and credentials persisted in OS keyring (Windows Credential Manager / macOS Keychain / Linux Secret Service)
+- **Real-time metrics**: Token usage, request counts, active connections by model/provider/app
+- **CLI management**: Command-line tools for provider and model configuration
+- **FFI bindings**: UniFFI-based bindings for Swift, Kotlin, Python, and other languages
 
 ## Architecture
 
 ```
 ┌─────────────────┐
-│  Local Apps     │ (via COM/XPC)
+│  Client Apps    │ (HTTP requests to localhost:8080)
 └────────┬────────┘
+         │ (HTTP)
+┌────────▼─────────┐
+│  Fire Box CLI    │ (fire-box serve)
+│  HTTP Gateway    │ (OpenAI/Anthropic compatible)
+└────────┬─────────┘
          │
 ┌────────▼─────────┐
-│  Native Layer    │ (Swift on macOS / C++ on Windows)
-│  - COM/XPC service│ (forwards to IPC, displays GUI)
-└────────┬─────────┘
-         │ (interprocess local socket)
-┌────────▼─────────┐
-│  Rust Core       │ (fire-box-core)
-│  - IPC server    │ (auth, routing, monitoring)
-│  - Provider client│ (protocol codecs, OAuth)
+│  Core Library    │ (core crate)
+│  - Auth          │ (app authorization)
+│  - Provider      │ (protocol codecs, OAuth)
+│  - Metrics       │ (usage tracking)
 └────────┬─────────┘
          │ (HTTPS)
 ┌────────▼─────────┐
@@ -35,112 +36,147 @@ Stateful LLM API gateway with authentication and monitoring. Rust core plus plat
 └──────────────────┘
 ```
 
+## Crates
+
+- **core/** - Core library with LLM provider abstraction, auth, and metrics
+- **ffi/** - UniFFI-based FFI bindings for native language integration
+- **cli/** - Command-line interface for configuration and HTTP server
+
 ## Quick Start
 
 ### 1. Build
 
 ```sh
+```sh
 cargo build --release
 ```
 
-### 2. Run service
+### 2. Configure providers
+
+Use the CLI to add LLM providers:
 
 ```sh
-./target/release/fire-box-core
+# Add OpenAI provider
+./target/release/fire-box provider add openai-main --type openai --api-key sk-...
+
+# Add Anthropic provider
+./target/release/fire-box provider add anthropic-main --type anthropic --api-key sk-ant-...
+
+# Add DashScope provider (with OAuth)
+./target/release/fire-box provider add dashscope-main --type dashscope
+
+# List providers
+./target/release/fire-box provider list
 ```
 
-On startup the service loads configuration from the OS keyring. On first run the configuration may be empty; the service will start and wait for the Native Layer to configure providers via IPC.
+### 3. Configure model mappings
 
-### 3. Configure via IPC
+Map model names to specific providers:
 
-The Native Layer uses the IPC endpoints to add providers and models (the examples use HTTP over the local socket):
-
-**Add an OpenAI provider**:
 ```sh
-# Windows (named pipe)
-curl --unix-socket //./pipe/fire-box-ipc \
-  -X POST http://localhost/ipc/v1/providers \
-  -H "Content-Type: application/json" \
-  -d '{"tag":"OpenAI","type":"openai","base_url":"https://api.openai.com/v1","credential":"sk-..."}'
+# Map gpt-4 to OpenAI
+./target/release/fire-box model add gpt-4 --provider openai-main --provider-model gpt-4
 
-# Unix (UDS)
-curl --unix-socket /tmp/fire-box-ipc.sock \
-  -X POST http://localhost/ipc/v1/providers \
-  -H "Content-Type: application/json" \
-  -d '{"tag":"OpenAI","type":"openai","base_url":"https://api.openai.com/v1","credential":"sk-..."}'
+# Map claude-3 to Anthropic
+./target/release/fire-box model add claude-3-opus --provider anthropic-main --provider-model claude-3-opus-20240229
+
+# List model mappings
+./target/release/fire-box model list
 ```
 
-**Add a model mapping**:
+### 4. Start HTTP server
+
+Start a local OpenAI/Anthropic-compatible HTTP server:
+
 ```sh
-curl --unix-socket /tmp/fire-box-ipc.sock \
-  -X POST http://localhost/ipc/v1/models \
-  -H "Content-Type: application/json" \
-  -d '{"tag":"gpt-4","provider_mappings":[{"provider":"OpenAI","model_id":"gpt-4"}]}'
+./target/release/fire-box serve --port 8080
 ```
 
-OAuth providers (DashScope, Copilot) will trigger the device-code flow on first use; the Native Layer receives `oauth_open_url` events and can notify the user.
+The server will be available at `http://localhost:8080` with OpenAI-compatible endpoints:
+- `POST /v1/chat/completions` - Chat completions
+- `POST /v1/completions` - Text completions
+- `GET /health` - Health check
+
+### 5. Use with OpenAI SDK
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://localhost:8080/v1",
+    api_key="dummy"  # Not validated by Fire Box
+)
+
+response = client.chat.completions.create(
+    model="gpt-4",
+    messages=[{"role": "user", "content": "Hello!"}]
+)
+print(response.choices[0].message.content)
+```
+
+## CLI Commands
+
+- `fire-box provider list` - List all providers
+- `fire-box provider add <tag> --type <type> [--api-key <key>] [--base-url <url>]` - Add provider
+- `fire-box provider remove <tag>` - Remove provider
+- `fire-box model list` - List all model mappings
+- `fire-box model add <model> --provider <tag> --provider-model <name>` - Add model mapping
+- `fire-box model remove <model>` - Remove model mapping
+- `fire-box app list` - List registered applications
+- `fire-box app revoke <app-id>` - Revoke application access
+- `fire-box serve [--port <port>] [--host <host>]` - Start HTTP server
+- `fire-box metrics` - View current metrics
 
 ## Testing
 
 ### Unit tests
 
 ```sh
-cargo test
+cargo test --lib
 ```
-
-Currently 17 unit tests pass (auth, metrics, models, protocols).
 
 ### Integration tests
 
-Integration tests require real credentials or manual OAuth authorization; use `--ignored` and `--nocapture` when running:
+Integration tests require real credentials or manual OAuth authorization:
 
 ```sh
-cargo test --test protocol -- --nocapture --ignored
-```
-
-**OpenAI and Anthropic tests** require environment variables:
-
-```sh
+# OpenAI test (requires OPENAI_API_KEY)
 export OPENAI_API_KEY=sk-...
-export OPENAI_BASE_URL=https://api.openai.com/v1  # optional
+cargo test --test openai -- --nocapture --ignored
+
+# Anthropic test (requires ANTHROPIC_AUTH_TOKEN)
 export ANTHROPIC_AUTH_TOKEN=sk-ant-...
-export ANTHROPIC_BASE_URL=https://api.anthropic.com  # optional
+cargo test --test anthropic -- --nocapture --ignored
 
-cargo test --test protocol test_openai -- --nocapture --ignored
-cargo test --test protocol test_anthropic -- --nocapture --ignored
+# DashScope OAuth test (interactive)
+cargo test --test dashscope -- --nocapture --ignored
+
+# Copilot OAuth test (interactive)
+cargo test --test copilot -- --nocapture --ignored
 ```
 
-**DashScope and Copilot OAuth tests** start from zero-auth and print an authorization URL and user code; copy the URL into a browser and complete the authorization:
+## FFI Bindings
+
+The `ffi/` crate provides UniFFI-based bindings for integration with:
+- Swift (iOS, macOS)
+- Kotlin (Android, JVM)
+- Python
+- Ruby
+- Other UniFFI-supported languages
+
+Build the FFI library:
 
 ```sh
-cargo test --test protocol test_dashscope_oauth -- --nocapture --ignored
-cargo test --test protocol test_copilot_oauth -- --nocapture --ignored
+cd ffi
+cargo build --release
 ```
 
-Tests print output such as:
-
-```
-╔════════════════════════════════════════════════════════════════╗
-║ GitHub Copilot OAuth Authorization Required                   ║
-╠════════════════════════════════════════════════════════════════╣
-║ Provider:   Copilot-Test                                       ║
-║ URL:        https://github.com/login/device                    ║
-║ User Code:  ABCD-1234                                          ║
-╚════════════════════════════════════════════════════════════════╝
-
-👉 Copy the URL above to your browser and enter the user code.
-```
-
-## Service unit
-
-An example `systemd` unit is provided as `fire-box.service` for reference:
+Generate bindings (example for Swift):
 
 ```sh
-sudo cp fire-box.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now fire-box
+cargo run --bin uniffi-bindgen generate src/fire_box.udl --language swift
 ```
 
 ## License
 
-This project is licensed under the Mozilla Public License 2.0 (MPL-2.0). See the `LICENSE` file in the repository root for the full terms.
+This project is licensed under the MIT License. See the `LICENSE` file in the repository root for the full terms.
