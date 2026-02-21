@@ -52,7 +52,7 @@ futures-util = "0.3"
 # For store encryption
 hex = "0.4"
 dirs = "6"
-getrandom = "0.2"
+getrandom = "0.4"
 
 # For URL parsing
 url = "2.5"
