@@ -1,0 +1,6 @@
+/.build/
+/Package.resolved
+*.xcodeproj/
+*.xcworkspace/
+xcuserdata/
+DerivedData/

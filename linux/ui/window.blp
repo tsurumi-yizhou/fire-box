@@ -1,0 +1,55 @@
+using Gtk 4.0;
+using Adw 1;
+
+template $FireBoxWindow : Adw.ApplicationWindow {
+  default-width: 800;
+  default-height: 600;
+  title: _("Fire Box");
+
+  Adw.ToolbarView {
+    [top]
+    Adw.HeaderBar {
+      [end]
+      MenuButton {
+        icon-name: "open-menu-symbolic";
+        menu-model: primary_menu;
+      }
+    }
+
+    content: Adw.StatusPage {
+      icon-name: "application-x-executable-symbolic";
+      title: _("Welcome to Fire Box");
+      description: _("A high-performance AI gateway");
+
+      child: Box {
+        orientation: vertical;
+        spacing: 12;
+        halign: center;
+
+        Button {
+          label: _("Fetch Data");
+          styles ["pill", "suggested-action"]
+          clicked => $on_fetch_clicked();
+        }
+
+        Label result_label {
+          label: "";
+          styles ["title-2"]
+        }
+      };
+    };
+  }
+}
+
+menu primary_menu {
+  section {
+    item {
+      label: _("Preferences");
+      action: "app.preferences";
+    }
+    item {
+      label: _("About");
+      action: "app.about";
+    }
+  }
+}

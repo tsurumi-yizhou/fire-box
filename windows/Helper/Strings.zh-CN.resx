@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root>
+  <resheader name="resmimetype">
+    <value>text/microsoft-resx</value>
+  </resheader>
+  <resheader name="version">
+    <value>2.0</value>
+  </resheader>
+  <resheader name="reader">
+    <value>System.Resources.ResXResourceReader, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value>
+  </resheader>
+  <resheader name="writer">
+    <value>System.Resources.ResXResourceWriter, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value>
+  </resheader>
+  <data name="DialogTitle" xml:space="preserve">
+    <value>AI 能力请求</value>
+  </data>
+  <data name="MainInstructionFormat" xml:space="preserve">
+    <value>{0} 想要使用 AI 能力，是否批准？</value>
+  </data>
+  <data name="Content" xml:space="preserve">
+    <value>该请求由本地 AI 能力管理服务发起。</value>
+  </data>
+  <data name="DefaultRequesterName" xml:space="preserve">
+    <value>某个应用</value>
+  </data>
+</root>

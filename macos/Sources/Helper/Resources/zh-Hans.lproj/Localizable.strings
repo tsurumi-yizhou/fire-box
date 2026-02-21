@@ -1,0 +1,6 @@
+"helper.title" = "AI 能力请求";
+"helper.instruction_format" = "%@ 想要使用 AI 能力，是否批准？";
+"helper.content" = "该请求由本地 AI 能力管理服务发起。";
+"helper.allow" = "允许";
+"helper.cancel" = "取消";
+"helper.default_requester" = "某个应用";

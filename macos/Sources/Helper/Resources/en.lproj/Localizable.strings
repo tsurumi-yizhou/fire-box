@@ -1,0 +1,6 @@
+"helper.title" = "AI Capability Request";
+"helper.instruction_format" = "%@ wants to use AI capabilities. Approve?";
+"helper.content" = "This request is sent by the local AI capability management service.";
+"helper.allow" = "Allow";
+"helper.cancel" = "Cancel";
+"helper.default_requester" = "An application";
