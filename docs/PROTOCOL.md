@@ -1,15 +1,15 @@
-# Local AI Capability Protocol
-- Provide a cross-platform IPC contract between the GUI app and the backend service.
-- Use each platform's native IPC type system (COM / XPC / D-Bus), not a JSON-encoded envelope.
-- The schema below uses a proto2-like style for readability.
+# Local IPC AI Capability Protocol
 
-## Providers
-### Common Types
+IPC protocol between GUI app and backend service.
+Uses native IPC per platform (COM / XPC / D-Bus).
+
+## Common Types
+
 ```proto
 enum ProviderType {
-  PROVIDER_TYPE_API_KEY = 1;
-  PROVIDER_TYPE_OAUTH = 2;
-  PROVIDER_TYPE_LOCAL = 3;
+  PROVIDER_TYPE_API_KEY = 1;    // OpenAI, Anthropic, Ollama, vLLM
+  PROVIDER_TYPE_OAUTH = 2;      // GitHub Copilot, DashScope
+  PROVIDER_TYPE_LOCAL = 3;      // llama.cpp
 }
 
 enum MessageRole {
@@ -19,11 +19,24 @@ enum MessageRole {
   MESSAGE_ROLE_TOOL = 4;
 }
 
-message OAuthInfo {
-  required string auth_url;
-  optional string state;
-  optional string pkce_challenge;
-  optional int64 expires_at_ms;
+message Result {
+  required bool success;
+  optional string message;
+}
+
+message OAuthChallenge {
+  required string device_code;
+  required string user_code;
+  required string verification_uri;
+  required int32 expires_in;
+  required int32 interval;
+}
+
+message OAuthCredentials {
+  required string access_token;
+  optional string refresh_token;
+  required int64 expiry_date_ms;
+  optional string resource_url;
 }
 
 message Provider {
@@ -32,35 +45,26 @@ message Provider {
   required ProviderType type;
   optional string base_url;
   optional string local_path;
+  required bool enabled;
 }
 
 message Model {
   required string model_id;
-  // Intentionally optional. Unset means global/unspecified ownership.
-  optional string provider_id;
-  optional int32 context_window;
+  required string provider_id;
   required bool enabled;
   optional bool capability_chat;
-  optional bool capability_tools;
-  optional bool capability_vision;
-  optional bool capability_embeddings;
   optional bool capability_streaming;
-  optional double cost_input_per_million_tokens;
-  optional double cost_output_per_million_tokens;
-  optional double cost_cache_read_per_million_tokens;
-  optional double cost_cache_write_per_million_tokens;
 }
 
-message RouteTarget {
-  required string provider_id;
-  required string model_id;
+message Message {
+  required MessageRole role;
+  optional string content;
 }
 
-message RouteRule {
-  // Exposed to local programs as a stable model alias.
-  required string alias;
-  // Backend tries targets in order for alignment and failover.
-  repeated RouteTarget targets;
+message Usage {
+  optional int32 prompt_tokens;
+  optional int32 completion_tokens;
+  optional int32 total_tokens;
 }
 
 message Tool {
@@ -75,26 +79,6 @@ message ToolCall {
   required string arguments_json;
 }
 
-message Message {
-  required MessageRole role;
-  optional string content;
-  optional string name;
-  optional string tool_call_id;
-  repeated ToolCall tool_calls;
-}
-
-message Usage {
-  optional int32 prompt_tokens;
-  optional int32 completion_tokens;
-  optional int32 total_tokens;
-}
-
-message Embedding {
-  optional string chunk_id;
-  optional string text;
-  repeated float vector;
-}
-
 message MetricsSnapshot {
   optional int64 window_start_ms;
   optional int64 window_end_ms;
@@ -104,19 +88,97 @@ message MetricsSnapshot {
   optional int64 completion_tokens_total;
   optional double cost_total;
 }
-
-message Result {
-  required bool success;
-  optional string message;
-}
-
 ```
 
+---
+
+## Provider Management
+
+### Add API Key Provider
+
+For OpenAI, Anthropic, Ollama, vLLM, etc.
+
+```proto
+message AddApiKeyProviderRequest {
+  required string name;
+  required string provider_type;    // "openai", "anthropic", "ollama", "vllm"
+  optional string api_key;          // Empty for Ollama
+  optional string base_url;
+}
+
+message AddApiKeyProviderResponse {
+  required Result result;
+  optional string provider_id;
+}
+```
+
+**Examples:**
+
+```
+// OpenAI
+{ name: "My OpenAI", provider_type: "openai", api_key: "sk-..." }
+
+// Ollama (no auth)
+{ name: "Local Ollama", provider_type: "ollama", base_url: "http://localhost:11434" }
+
+// vLLM
+{ name: "vLLM", provider_type: "vllm", base_url: "http://localhost:8000/v1", api_key: "token-123" }
+```
+
+---
+
+### Add OAuth Provider
+
+**Step 1: Start OAuth**
+
+```proto
+message AddOAuthProviderRequest {
+  required string name;
+  required string provider_type;    // "copilot", "dashscope"
+}
+
+message AddOAuthProviderResponse {
+  required Result result;
+  optional string provider_id;
+  optional OAuthChallenge challenge;
+}
+```
+
+**Step 2: Complete OAuth**
+
+```proto
+message CompleteOAuthRequest {
+  required string provider_id;
+}
+
+message CompleteOAuthResponse {
+  required Result result;
+  optional OAuthCredentials credentials;
+}
+```
+
+---
+
+### Add Local Provider
+
+```proto
+message AddLocalProviderRequest {
+  required string name;
+  required string model_path;
+}
+
+message AddLocalProviderResponse {
+  required Result result;
+  optional string provider_id;
+}
+```
+
+---
+
 ### List Providers
-Returns the provider list, optionally filtered by provider name.
+
 ```proto
 message ListProvidersRequest {
-  optional string name_filter;
 }
 
 message ListProvidersResponse {
@@ -125,39 +187,10 @@ message ListProvidersResponse {
 }
 ```
 
-### Get Provider
-Returns one provider by `provider_id`.
-```proto
-message GetProviderRequest {
-  required string provider_id;
-}
-
-message GetProviderResponse {
-  required Result result;
-  optional Provider provider;
-}
-```
-
-### Add Provider
-Creates a provider and returns its id. OAuth providers may return extra auth info.
-```proto
-message AddProviderRequest {
-  required string name;
-  required ProviderType type;
-  optional string api_key;
-  optional string base_url;
-  optional string local_path;
-}
-
-message AddProviderResponse {
-  required Result result;
-  optional string provider_id;
-  optional OAuthInfo oauth_info;
-}
-```
+---
 
 ### Delete Provider
-Deletes one provider by `provider_id`.
+
 ```proto
 message DeleteProviderRequest {
   required string provider_id;
@@ -168,11 +201,15 @@ message DeleteProviderResponse {
 }
 ```
 
+---
+
+## Model Management
+
 ### Get Models
-Returns the full model list, optionally filtered by model name.
+
 ```proto
 message GetModelsRequest {
-  optional string name_filter;
+  optional string provider_id;
 }
 
 message GetModelsResponse {
@@ -181,57 +218,36 @@ message GetModelsResponse {
 }
 ```
 
-### Set Models
-Fully replaces the model list with the provided items.
+---
+
+### Set Model Enabled
+
 ```proto
-// Full replace: this request overwrites the entire model list.
-message SetModelsRequest {
-  repeated Model models;
+message SetModelEnabledRequest {
+  required string provider_id;
+  required string model_id;
+  required bool enabled;
 }
 
-message SetModelsResponse {
+message SetModelEnabledResponse {
   required Result result;
 }
 ```
 
-## Route
-Local programs call a user-defined `alias`. The backend forwards
-requests to `RouteRule.targets` in order until one succeeds. This supports
-cross-provider model id alignment and fallback/downgrade.
-`SetRouteRules` only applies to aliases that exist in alias list. Removing an
-alias from alias list also removes its route rules.
+---
 
-### Set Alias List
-Fully replaces the alias list used by local programs.
-```proto
-// Full replace: this request overwrites the entire alias list.
-message SetAliasListRequest {
-  repeated string aliases;
-}
-
-message SetAliasListResponse {
-  required Result result;
-}
-```
-
-### Get Alias List
-Returns all aliases currently available for routing.
-```proto
-message GetAliasListRequest {
-}
-
-message GetAliasListResponse {
-  required Result result;
-  repeated string aliases;
-}
-```
+## Routing
 
 ### Set Route Rules
-Sets the ordered routing targets for one alias.
+
 ```proto
+message RouteTarget {
+  required string provider_id;
+  required string model_id;
+}
+
 message SetRouteRulesRequest {
   required string alias;
-  // Must contain at least 1 target.
   repeated RouteTarget targets;
 }
 
@@ -240,8 +256,10 @@ message SetRouteRulesResponse {
 }
 ```
 
+---
+
 ### Get Route Rules
-Returns routing targets for one alias.
+
 ```proto
 message GetRouteRulesRequest {
   required string alias;
@@ -249,33 +267,38 @@ message GetRouteRulesRequest {
 
 message GetRouteRulesResponse {
   required Result result;
-  optional RouteRule route_rule;
+  repeated RouteTarget targets;
 }
 ```
 
-## Sessions
-### Complete Chat
-Runs one chat completion using an alias as `model_id`.
+---
+
+## Chat Completion
+
+### Complete (non-streaming)
+
 ```proto
-message CompleteChatRequest {
-  // Must be an alias defined by route rules.
+message CompleteRequest {
   required string model_id;
   repeated Message messages;
   repeated Tool tools;
 }
 
-message CompleteChatResponse {
+message CompleteResponse {
   required Result result;
   optional Message completion;
   optional Usage usage;
 }
 ```
 
-### Create Stream
-Creates a chat message stream channel.
+---
+
+### Stream (streaming)
+
+**Create stream:**
+
 ```proto
 message CreateStreamRequest {
-  // Must be an alias defined by route rules.
   required string model_id;
 }
 
@@ -285,73 +308,55 @@ message CreateStreamResponse {
 }
 ```
 
-### Ask Stream
-Appends one message into an existing stream.
-Client must always send full `tools` state in every call (can be empty).
-Server must not reuse tools from previous turns when omitted.
+**Send message:**
+
 ```proto
-message AskStreamRequest {
+message SendMessageRequest {
   required string stream_id;
   required Message message;
-  // Full tools state for this turn, not a delta.
-  // Empty list means clear all tools.
   repeated Tool tools;
 }
 
-message AskStreamResponse {
+message SendMessageResponse {
   required Result result;
 }
 ```
 
-### Reply Stream
-Fetches one new reply chunk from a stream.
-If both `chunk` and `tool_call` exist, process `chunk` first.
+**Receive chunk:**
+
 ```proto
-message ReplyStreamRequest {
+message ReceiveStreamRequest {
   required string stream_id;
-  // Block for at most wait_ms when no new chunk is available.
-  optional int32 wait_ms;
+  optional int32 timeout_ms;
 }
 
-message ReplyStreamResponse {
+message ReceiveStreamResponse {
   required Result result;
-  // Assistant text/message delta chunk.
   optional Message chunk;
-  // Assistant tool call chunk.
   optional ToolCall tool_call;
   optional bool done;
   optional Usage usage;
 }
 ```
 
-### Cancel Stream
-Cancels an existing stream and releases server-side resources.
+**Close stream:**
+
 ```proto
-message CancelStreamRequest {
+message CloseStreamRequest {
   required string stream_id;
 }
 
-message CancelStreamResponse {
+message CloseStreamResponse {
   required Result result;
 }
 ```
 
-### Embed Content
-Embeds a local file and returns generated vectors.
-```proto
-message EmbedContentRequest {
-  required string file_path;
-}
-
-message EmbedContentResponse {
-  required Result result;
-  repeated Embedding embeddings;
-}
-```
+---
 
 ## Metrics
+
 ### Get Metrics Snapshot
-Returns the latest aggregated metrics snapshot for dashboard display.
+
 ```proto
 message GetMetricsSnapshotRequest {
 }
@@ -362,8 +367,10 @@ message GetMetricsSnapshotResponse {
 }
 ```
 
+---
+
 ### Get Metrics Range
-Returns aggregated metrics in a time range for charts and trend analysis.
+
 ```proto
 message GetMetricsRangeRequest {
   required int64 start_ms;
@@ -374,4 +381,139 @@ message GetMetricsRangeResponse {
   required Result result;
   repeated MetricsSnapshot snapshots;
 }
+```
+
+---
+
+## Connection Management
+
+### List Connections
+
+```proto
+message Connection {
+  required string connection_id;
+  required string client_name;      // e.g. "VS Code", "curl"
+  optional int64 requests_count;
+}
+
+message ListConnectionsRequest {
+}
+
+message ListConnectionsResponse {
+  required Result result;
+  repeated Connection connections;
+}
+```
+
+### Close Connection
+
+```proto
+message CloseConnectionRequest {
+  required string connection_id;
+}
+
+message CloseConnectionResponse {
+  required Result result;
+}
+```
+
+---
+
+## Usage Examples
+
+### Add OpenAI Provider
+
+```
+Request: AddApiKeyProvider {
+  name: "My OpenAI",
+  provider_type: "openai",
+  api_key: "sk-abc123"
+}
+
+Response: {
+  success: true,
+  provider_id: "prov_abc123"
+}
+```
+
+### Add Ollama Provider (no auth)
+
+```
+Request: AddApiKeyProvider {
+  name: "Local Ollama",
+  provider_type: "ollama",
+  base_url: "http://localhost:11434"
+}
+
+Response: {
+  success: true,
+  provider_id: "prov_ollama123"
+}
+```
+
+### Add Copilot (OAuth)
+
+```
+// Step 1: Start OAuth
+Request: AddOAuthProvider {
+  name: "Copilot",
+  provider_type: "copilot"
+}
+
+Response: {
+  success: true,
+  provider_id: "prov_copilot123",
+  challenge: {
+    device_code: "abc...",
+    user_code: "ABCD-1234",
+    verification_uri: "https://github.com/login/device",
+    expires_in: 900,
+    interval: 1
+  }
+}
+
+// User visits URL and enters code...
+
+// Step 2: Complete OAuth
+Request: CompleteOAuth {
+  provider_id: "prov_copilot123"
+}
+
+Response: {
+  success: true,
+  credentials: {
+    access_token: "...",
+    refresh_token: "...",
+    expiry_date_ms: 1234567890
+  }
+}
+```
+
+### Streaming Chat
+
+```
+// 1. Create stream
+Request: CreateStream { model_id: "my-model" }
+Response: { success: true, stream_id: "stream_123" }
+
+// 2. Send message
+Request: SendMessage {
+  stream_id: "stream_123",
+  message: { role: "user", content: "Hello" }
+}
+Response: { success: true }
+
+// 3. Receive streaming chunks (loop until done=true)
+Request: ReceiveStream { stream_id: "stream_123", timeout_ms: 5000 }
+Response: { success: true, chunk: { role: "assistant", content: "Hel" } }
+
+Request: ReceiveStream { stream_id: "stream_123", timeout_ms: 5000 }
+Response: { success: true, chunk: { role: "assistant", content: "lo!" } }
+
+Request: ReceiveStream { stream_id: "stream_123", timeout_ms: 5000 }
+Response: { success: true, done: true, usage: { total_tokens: 10 } }
+
+// 4. Close stream
+Request: CloseStream { stream_id: "stream_123" }
+Response: { success: true }
 ```
