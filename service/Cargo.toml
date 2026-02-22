@@ -58,7 +58,7 @@ getrandom = "0.2"
 url = "2.5"
 
 # System info for monitoring
-sysinfo = "0.33"
+sysinfo = "0.38"
 
 # Linux: systemd support
 [target.'cfg(target_os = "linux")'.dependencies]
