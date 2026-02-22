@@ -18,7 +18,7 @@ const STORE_FILE: &str = "fire-box-store.enc";
 /// Generate a cryptographically secure random key.
 fn generate_key_seed() -> [u8; 32] {
     let mut key = [0u8; 32];
-    getrandom::getrandom(&mut key).expect("failed to generate random key");
+    getrandom::fill(&mut key).expect("failed to generate random key");
     key
 }
 
