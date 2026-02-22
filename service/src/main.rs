@@ -69,10 +69,9 @@ fn init_logging() {
     #[cfg(target_os = "linux")]
     {
         // Try systemd journal first, fall back to tracing
-        if systemd_journal_logger::JournalLogger::new()
-            .include_severity(true)
-            .include_location(true)
-            .try_init()
+        if systemd_journal_logger::JournalLog::new()
+            .unwrap()
+            .install()
             .is_err()
         {
             tracing_subscriber::registry()
@@ -121,7 +120,7 @@ mod windows_service {
             ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus,
             ServiceType,
         },
-        service_control_handler::{self, ServiceControlHandlerResult, ServiceStatusHandle},
+        service_control_handler::{self, ServiceControlHandlerResult},
         service_dispatcher,
     };
 
@@ -176,7 +175,7 @@ mod windows_service {
             wait_hint: Duration::default(),
             process_id: None,
         };
-        status_handle.set_service_status(next_status)?;
+        status_handle.set_service_status(next_status.clone())?;
 
         // Run service logic
         let rt = tokio::runtime::Runtime::new()?;
@@ -225,7 +224,7 @@ async fn main() -> Result<()> {
     // Set up signal handlers
     let shutdown_clone = shutdown.handle();
     tokio::spawn(async move {
-        match signal::ctrl_c().await {
+        match tokio::signal::ctrl_c().await {
             Ok(()) => {
                 tracing::info!("Received Ctrl+C, shutting down...");
                 shutdown_clone.request();
