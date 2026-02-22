@@ -19,7 +19,6 @@ pub mod providers;
 use anyhow::Result;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tokio::signal;
 
 /// Service state
 static RUNNING: AtomicBool = AtomicBool::new(false);
@@ -116,7 +115,7 @@ mod windows_service {
     use super::*;
     use std::ffi::OsString;
     use std::time::Duration;
-    use windows_service::{
+    use ::windows_service::{
         define_windows_service,
         service::{
             ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus,
