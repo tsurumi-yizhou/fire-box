@@ -12,6 +12,7 @@ use std::path::PathBuf;
 fn config_with_model_path() {
     let config = LlamaCppConfig {
         model_path: PathBuf::from("/models/llama-7b.gguf"),
+        server_path: None,
         context_size: 4096,
         gpu_layers: None,
         threads: None,
@@ -26,6 +27,7 @@ fn config_with_model_path() {
 fn config_with_gpu_layers() {
     let config = LlamaCppConfig {
         model_path: PathBuf::from("/models/mistral-7b.gguf"),
+        server_path: None,
         context_size: 4096,
         gpu_layers: Some(32),
         threads: None,
@@ -39,6 +41,7 @@ fn config_with_gpu_layers() {
 fn config_with_threads() {
     let config = LlamaCppConfig {
         model_path: PathBuf::from("/models/qwen-7b.gguf"),
+        server_path: None,
         context_size: 8192,
         gpu_layers: None,
         threads: Some(8),
@@ -52,6 +55,7 @@ fn config_with_threads() {
 fn config_with_all_options() {
     let config = LlamaCppConfig {
         model_path: PathBuf::from("/models/llama-2-70b.gguf"),
+        server_path: None,
         context_size: 16384,
         gpu_layers: Some(48),
         threads: Some(16),
@@ -67,6 +71,7 @@ fn config_with_all_options() {
 fn config_with_server_url() {
     let config = LlamaCppConfig {
         model_path: PathBuf::new(),
+        server_path: None,
         context_size: 4096,
         gpu_layers: None,
         threads: None,
@@ -80,6 +85,7 @@ fn config_with_server_url() {
 fn config_clone() {
     let config = LlamaCppConfig {
         model_path: PathBuf::from("/models/test.gguf"),
+        server_path: None,
         context_size: 4096,
         gpu_layers: None,
         threads: None,
@@ -94,6 +100,7 @@ fn config_clone() {
 fn config_debug() {
     let config = LlamaCppConfig {
         model_path: PathBuf::from("/models/debug.gguf"),
+        server_path: None,
         context_size: 4096,
         gpu_layers: None,
         threads: None,
@@ -119,6 +126,7 @@ fn provider_from_model_path() {
 fn provider_from_config() {
     let config = LlamaCppConfig {
         model_path: PathBuf::from("/models/mistral.gguf"),
+        server_path: None,
         context_size: 8192,
         gpu_layers: Some(24),
         threads: Some(8),
@@ -141,6 +149,7 @@ fn provider_from_server_url() {
 fn provider_config_accessor() {
     let config = LlamaCppConfig {
         model_path: PathBuf::from("/models/test.gguf"),
+        server_path: None,
         context_size: 4096,
         gpu_layers: None,
         threads: None,
@@ -209,6 +218,7 @@ fn context_size_default() {
 fn context_size_custom() {
     let config = LlamaCppConfig {
         model_path: PathBuf::from("/models/test.gguf"),
+        server_path: None,
         context_size: 8192,
         gpu_layers: None,
         threads: None,
@@ -226,6 +236,7 @@ fn context_size_variations() {
     for size in sizes {
         let config = LlamaCppConfig {
             model_path: PathBuf::from("/models/test.gguf"),
+            server_path: None,
             context_size: size,
             gpu_layers: None,
             threads: None,
@@ -248,6 +259,7 @@ fn gpu_layers_none() {
 fn gpu_layers_some() {
     let config = LlamaCppConfig {
         model_path: PathBuf::from("/models/test.gguf"),
+        server_path: None,
         context_size: 4096,
         gpu_layers: Some(32),
         threads: None,
@@ -265,6 +277,7 @@ fn gpu_layers_variations() {
     for layers_count in layers {
         let config = LlamaCppConfig {
             model_path: PathBuf::from("/models/test.gguf"),
+            server_path: None,
             context_size: 4096,
             gpu_layers: Some(layers_count),
             threads: None,
@@ -287,6 +300,7 @@ fn threads_none() {
 fn threads_some() {
     let config = LlamaCppConfig {
         model_path: PathBuf::from("/models/test.gguf"),
+        server_path: None,
         context_size: 4096,
         gpu_layers: None,
         threads: Some(8),
@@ -304,6 +318,7 @@ fn threads_variations() {
     for threads in thread_counts {
         let config = LlamaCppConfig {
             model_path: PathBuf::from("/models/test.gguf"),
+            server_path: None,
             context_size: 4096,
             gpu_layers: None,
             threads: Some(threads),
@@ -479,6 +494,7 @@ fn model_path_absolute() {
 fn context_size_zero() {
     let config = LlamaCppConfig {
         model_path: PathBuf::from("/models/test.gguf"),
+        server_path: None,
         context_size: 0,
         gpu_layers: None,
         threads: None,
@@ -493,6 +509,7 @@ fn context_size_zero() {
 fn gpu_layers_zero() {
     let config = LlamaCppConfig {
         model_path: PathBuf::from("/models/test.gguf"),
+        server_path: None,
         context_size: 4096,
         gpu_layers: Some(0),
         threads: None,
@@ -507,6 +524,7 @@ fn gpu_layers_zero() {
 fn threads_one() {
     let config = LlamaCppConfig {
         model_path: PathBuf::from("/models/test.gguf"),
+        server_path: None,
         context_size: 4096,
         gpu_layers: None,
         threads: Some(1),

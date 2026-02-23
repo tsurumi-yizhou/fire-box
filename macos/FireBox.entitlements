@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Keychain access for secure credential storage -->
+    <key>keychain-access-groups</key>
+    <array>
+        <string>$(AppIdentifierPrefix)com.firebox.service</string>
+    </array>
+
+    <!-- App Sandbox (optional, for Mac App Store) -->
+    <key>com.apple.security.app-sandbox</key>
+    <false/>
+
+    <!-- Network access for AI providers -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+
+    <!-- File access for local models -->
+    <key>com.apple.security.files.user-selected.read-write</key>
+    <true/>
+</dict>
+</plist>

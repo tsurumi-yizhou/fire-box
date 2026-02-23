@@ -2,8 +2,8 @@
 
 use firebox_service::middleware::route::{
     ModelEnabledState, RouteRule, RouteTarget, delete_route_rules, get_all_rules, get_next_target,
-    get_route_rules, init, is_model_enabled, list_enabled_models, load_enabled_models,
-    resolve_alias, save_enabled_models, set_route_rules, toggle_model,
+    get_route_rules, is_model_enabled, list_enabled_models, load_enabled_models, resolve_alias,
+    save_enabled_models, set_route_rules, toggle_model,
 };
 
 // RouteTarget tests
@@ -177,27 +177,9 @@ fn model_enabled_state_clone() {
     assert_eq!(state.enabled_models.len(), cloned.enabled_models.len());
 }
 
-// Route initialization tests
-#[test]
-fn init_route_storage() {
-    let result = init();
-    assert!(result.is_ok());
-}
-
-#[test]
-fn init_multiple_times() {
-    // Should be idempotent
-    let result1 = init();
-    let result2 = init();
-    assert!(result1.is_ok());
-    assert!(result2.is_ok());
-}
-
 // Route rules management tests
-#[test]
-fn set_and_get_route_rules() {
-    let _ = init();
-
+#[tokio::test]
+async fn set_and_get_route_rules() {
     let targets = vec![
         RouteTarget {
             provider_id: "openai".to_string(),
@@ -209,48 +191,42 @@ fn set_and_get_route_rules() {
         },
     ];
 
-    let result = set_route_rules("test-alias", targets);
+    let result = set_route_rules("test-alias", targets).await;
     assert!(result.is_ok());
 
-    let retrieved = get_route_rules("test-alias").unwrap();
+    let retrieved = get_route_rules("test-alias").await.unwrap();
     assert!(retrieved.is_some());
     let rule = retrieved.unwrap();
     assert_eq!(rule.alias, "test-alias");
     assert_eq!(rule.targets.len(), 2);
 }
 
-#[test]
-fn get_nonexistent_route_rules() {
-    let _ = init();
-
-    let result = get_route_rules("nonexistent-alias").unwrap();
+#[tokio::test]
+async fn get_nonexistent_route_rules() {
+    let result = get_route_rules("nonexistent-alias").await.unwrap();
     assert!(result.is_none());
 }
 
-#[test]
-fn test_delete_route_rules() {
-    let _ = init();
-
+#[tokio::test]
+async fn test_delete_route_rules() {
     // First set
     let targets = vec![RouteTarget {
         provider_id: "openai".to_string(),
         model_id: "gpt-4".to_string(),
     }];
-    set_route_rules("delete-test", targets).unwrap();
+    set_route_rules("delete-test", targets).await.unwrap();
 
     // Then delete
-    let result = delete_route_rules("delete-test");
+    let result = delete_route_rules("delete-test").await;
     assert!(result.is_ok());
 
     // Verify deleted
-    let retrieved = get_route_rules("delete-test").unwrap();
+    let retrieved = get_route_rules("delete-test").await.unwrap();
     assert!(retrieved.is_none());
 }
 
-#[test]
-fn test_get_all_rules() {
-    let _ = init();
-
+#[tokio::test]
+async fn test_get_all_rules() {
     // Add some rules
     set_route_rules(
         "rule1",
@@ -259,6 +235,7 @@ fn test_get_all_rules() {
             model_id: "gpt-4".to_string(),
         }],
     )
+    .await
     .unwrap();
 
     set_route_rules(
@@ -268,22 +245,23 @@ fn test_get_all_rules() {
             model_id: "claude-3".to_string(),
         }],
     )
+    .await
     .unwrap();
 
-    let all = get_all_rules().unwrap();
+    let all = get_all_rules().await.unwrap();
     assert!(all.len() >= 2);
 }
 
-#[test]
-fn update_existing_route_rules() {
-    let _ = init();
-
+#[tokio::test]
+async fn update_existing_route_rules() {
     // Set initial rules
     let initial_targets = vec![RouteTarget {
         provider_id: "openai".to_string(),
         model_id: "gpt-3.5".to_string(),
     }];
-    set_route_rules("update-test", initial_targets).unwrap();
+    set_route_rules("update-test", initial_targets)
+        .await
+        .unwrap();
 
     // Update rules
     let updated_targets = vec![
@@ -296,43 +274,39 @@ fn update_existing_route_rules() {
             model_id: "claude-3".to_string(),
         },
     ];
-    set_route_rules("update-test", updated_targets).unwrap();
+    set_route_rules("update-test", updated_targets)
+        .await
+        .unwrap();
 
     // Verify update
-    let retrieved = get_route_rules("update-test").unwrap().unwrap();
+    let retrieved = get_route_rules("update-test").await.unwrap().unwrap();
     assert_eq!(retrieved.targets.len(), 2);
     assert_eq!(retrieved.targets[0].model_id, "gpt-4");
 }
 
 // Alias resolution tests
-#[test]
-fn resolve_alias_without_rule() {
-    let _ = init();
-
+#[tokio::test]
+async fn resolve_alias_without_rule() {
     // Without a rule, alias should resolve to default provider with alias as model
-    let result = resolve_alias("gpt-4").unwrap();
+    let result = resolve_alias("gpt-4").await.unwrap();
     assert_eq!(result, ("default".to_string(), "gpt-4".to_string()));
 }
 
-#[test]
-fn resolve_alias_with_rule() {
-    let _ = init();
-
+#[tokio::test]
+async fn resolve_alias_with_rule() {
     let targets = vec![RouteTarget {
         provider_id: "openai".to_string(),
         model_id: "gpt-4-turbo".to_string(),
     }];
-    set_route_rules("my-gpt4", targets).unwrap();
+    set_route_rules("my-gpt4", targets).await.unwrap();
 
-    let result = resolve_alias("my-gpt4").unwrap();
+    let result = resolve_alias("my-gpt4").await.unwrap();
     assert_eq!(result.0, "openai");
     assert_eq!(result.1, "gpt-4-turbo");
 }
 
-#[test]
-fn resolve_alias_returns_first_target() {
-    let _ = init();
-
+#[tokio::test]
+async fn resolve_alias_returns_first_target() {
     let targets = vec![
         RouteTarget {
             provider_id: "openai".to_string(),
@@ -343,19 +317,17 @@ fn resolve_alias_returns_first_target() {
             model_id: "claude-3".to_string(),
         },
     ];
-    set_route_rules("multi-target", targets).unwrap();
+    set_route_rules("multi-target", targets).await.unwrap();
 
-    let result = resolve_alias("multi-target").unwrap();
+    let result = resolve_alias("multi-target").await.unwrap();
     // Should return first target
     assert_eq!(result.0, "openai");
     assert_eq!(result.1, "gpt-4");
 }
 
 // Failover tests
-#[test]
-fn get_next_target_basic() {
-    let _ = init();
-
+#[tokio::test]
+async fn get_next_target_basic() {
     let targets = vec![
         RouteTarget {
             provider_id: "openai".to_string(),
@@ -366,19 +338,17 @@ fn get_next_target_basic() {
             model_id: "claude-3".to_string(),
         },
     ];
-    set_route_rules("failover-test", targets).unwrap();
+    set_route_rules("failover-test", targets).await.unwrap();
 
-    let next = get_next_target("failover-test", "openai").unwrap();
+    let next = get_next_target("failover-test", "openai").await.unwrap();
     assert!(next.is_some());
     let (provider, model) = next.unwrap();
     assert_eq!(provider, "anthropic");
     assert_eq!(model, "claude-3");
 }
 
-#[test]
-fn get_next_target_last_provider() {
-    let _ = init();
-
+#[tokio::test]
+async fn get_next_target_last_provider() {
     let targets = vec![
         RouteTarget {
             provider_id: "openai".to_string(),
@@ -389,38 +359,32 @@ fn get_next_target_last_provider() {
             model_id: "claude-3".to_string(),
         },
     ];
-    set_route_rules("failover-last", targets).unwrap();
+    set_route_rules("failover-last", targets).await.unwrap();
 
-    let next = get_next_target("failover-last", "anthropic").unwrap();
+    let next = get_next_target("failover-last", "anthropic").await.unwrap();
     assert!(next.is_none());
 }
 
-#[test]
-fn get_next_target_nonexistent_alias() {
-    let _ = init();
-
-    let next = get_next_target("nonexistent", "openai").unwrap();
+#[tokio::test]
+async fn get_next_target_nonexistent_alias() {
+    let next = get_next_target("nonexistent", "openai").await.unwrap();
     assert!(next.is_none());
 }
 
-#[test]
-fn get_next_target_single_rule() {
-    let _ = init();
-
+#[tokio::test]
+async fn get_next_target_single_rule() {
     let targets = vec![RouteTarget {
         provider_id: "openai".to_string(),
         model_id: "gpt-4".to_string(),
     }];
-    set_route_rules("single-target", targets).unwrap();
+    set_route_rules("single-target", targets).await.unwrap();
 
-    let next = get_next_target("single-target", "openai").unwrap();
+    let next = get_next_target("single-target", "openai").await.unwrap();
     assert!(next.is_none());
 }
 
-#[test]
-fn get_next_target_three_providers() {
-    let _ = init();
-
+#[tokio::test]
+async fn get_next_target_three_providers() {
     let targets = vec![
         RouteTarget {
             provider_id: "openai".to_string(),
@@ -435,110 +399,100 @@ fn get_next_target_three_providers() {
             model_id: "qwen-max".to_string(),
         },
     ];
-    set_route_rules("three-targets", targets).unwrap();
+    set_route_rules("three-targets", targets).await.unwrap();
 
     // From first to second
-    let next1 = get_next_target("three-targets", "openai").unwrap();
+    let next1 = get_next_target("three-targets", "openai").await.unwrap();
     assert_eq!(next1.unwrap().0, "anthropic");
 
     // From second to third
-    let next2 = get_next_target("three-targets", "anthropic").unwrap();
+    let next2 = get_next_target("three-targets", "anthropic").await.unwrap();
     assert_eq!(next2.unwrap().0, "dashscope");
 
     // From third, no more
-    let next3 = get_next_target("three-targets", "dashscope").unwrap();
+    let next3 = get_next_target("three-targets", "dashscope").await.unwrap();
     assert!(next3.is_none());
 }
 
 // Model enabled state tests
-#[test]
-fn save_and_load_enabled_models() {
-    let _ = init();
-
+#[tokio::test]
+async fn save_and_load_enabled_models() {
     let models = vec!["gpt-4".to_string(), "gpt-3.5".to_string()];
-    let result = save_enabled_models("openai", &models);
+    let result = save_enabled_models("openai", &models).await;
     assert!(result.is_ok());
 
-    let loaded = load_enabled_models("openai");
+    let loaded = load_enabled_models("openai").await;
     assert!(loaded.is_some());
     let loaded_models = loaded.unwrap();
     assert_eq!(loaded_models.len(), 2);
 }
 
-#[test]
-fn load_nonexistent_enabled_models() {
-    let _ = init();
-
-    let loaded = load_enabled_models("nonexistent-provider");
+#[tokio::test]
+async fn load_nonexistent_enabled_models() {
+    let loaded = load_enabled_models("nonexistent-provider").await;
     assert!(loaded.is_none());
 }
 
-#[test]
-fn is_model_enabled_default() {
-    let _ = init();
-
+#[tokio::test]
+async fn is_model_enabled_default() {
     // When no state is saved, all models should be enabled
-    assert!(is_model_enabled("openai", "gpt-4"));
-    assert!(is_model_enabled("openai", "any-model"));
+    assert!(is_model_enabled("openai", "gpt-4").await);
+    assert!(is_model_enabled("openai", "any-model").await);
 }
 
-#[test]
-fn is_model_enabled_with_specific_models() {
-    let _ = init();
+#[tokio::test]
+async fn is_model_enabled_with_specific_models() {
+    save_enabled_models("openai", &["gpt-4".to_string()])
+        .await
+        .unwrap();
 
-    save_enabled_models("openai", &["gpt-4".to_string()]).unwrap();
-
-    assert!(is_model_enabled("openai", "gpt-4"));
-    assert!(!is_model_enabled("openai", "gpt-3.5"));
+    assert!(is_model_enabled("openai", "gpt-4").await);
+    assert!(!is_model_enabled("openai", "gpt-3.5").await);
 }
 
-#[test]
-fn toggle_model_enable() {
-    let _ = init();
-
+#[tokio::test]
+async fn toggle_model_enable() {
     let all_models = vec!["gpt-4".to_string(), "gpt-3.5".to_string()];
 
     // Start with none enabled
-    save_enabled_models("openai", &[]).unwrap();
+    save_enabled_models("openai", &[]).await.unwrap();
 
     // Enable gpt-4
-    toggle_model("openai", "gpt-4", true, &all_models).unwrap();
+    toggle_model("openai", "gpt-4", true, &all_models)
+        .await
+        .unwrap();
 
-    assert!(is_model_enabled("openai", "gpt-4"));
-    assert!(!is_model_enabled("openai", "gpt-3.5"));
+    assert!(is_model_enabled("openai", "gpt-4").await);
+    assert!(!is_model_enabled("openai", "gpt-3.5").await);
 }
 
-#[test]
-fn toggle_model_disable() {
-    let _ = init();
-
+#[tokio::test]
+async fn toggle_model_disable() {
     let all_models = vec!["gpt-4".to_string(), "gpt-3.5".to_string()];
 
     // Start with both enabled
-    save_enabled_models("openai", &all_models).unwrap();
+    save_enabled_models("openai", &all_models).await.unwrap();
 
     // Disable gpt-3.5
-    toggle_model("openai", "gpt-3.5", false, &all_models).unwrap();
+    toggle_model("openai", "gpt-3.5", false, &all_models)
+        .await
+        .unwrap();
 
-    assert!(is_model_enabled("openai", "gpt-4"));
-    assert!(!is_model_enabled("openai", "gpt-3.5"));
+    assert!(is_model_enabled("openai", "gpt-4").await);
+    assert!(!is_model_enabled("openai", "gpt-3.5").await);
 }
 
-#[test]
-fn list_enabled_models_all() {
-    let _ = init();
-
+#[tokio::test]
+async fn list_enabled_models_all() {
     let all_models = vec!["gpt-4".to_string(), "gpt-3.5".to_string()];
 
     // None saved means all enabled
-    let enabled = list_enabled_models("openai", &all_models);
+    let enabled = list_enabled_models("openai", &all_models).await;
     assert_eq!(enabled.len(), 2);
 }
 
-#[test]
-fn list_enabled_models_specific() {
-    let _ = init();
-
+#[tokio::test]
+async fn list_enabled_models_specific() {
     let all_models = vec![
         "gpt-4".to_string(),
         "gpt-3.5".to_string(),
@@ -546,43 +500,49 @@ fn list_enabled_models_specific() {
     ];
     let enabled_models = vec!["gpt-4".to_string(), "gpt-4-turbo".to_string()];
 
-    save_enabled_models("openai", &enabled_models).unwrap();
+    save_enabled_models("openai", &enabled_models)
+        .await
+        .unwrap();
 
-    let enabled = list_enabled_models("openai", &all_models);
+    let enabled = list_enabled_models("openai", &all_models).await;
     assert_eq!(enabled.len(), 2);
     assert!(enabled.contains(&"gpt-4".to_string()));
     assert!(enabled.contains(&"gpt-4-turbo".to_string()));
 }
 
-#[test]
-fn toggle_model_add_new() {
-    let _ = init();
-
+#[tokio::test]
+async fn toggle_model_add_new() {
     let all_models = vec!["gpt-4".to_string(), "new-model".to_string()];
 
     // Start with only gpt-4
-    save_enabled_models("openai", &["gpt-4".to_string()]).unwrap();
+    save_enabled_models("openai", &["gpt-4".to_string()])
+        .await
+        .unwrap();
 
     // Enable new model
-    toggle_model("openai", "new-model", true, &all_models).unwrap();
+    toggle_model("openai", "new-model", true, &all_models)
+        .await
+        .unwrap();
 
-    assert!(is_model_enabled("openai", "gpt-4"));
-    assert!(is_model_enabled("openai", "new-model"));
+    assert!(is_model_enabled("openai", "gpt-4").await);
+    assert!(is_model_enabled("openai", "new-model").await);
 }
 
-#[test]
-fn toggle_model_disable_last_one() {
-    let _ = init();
-
+#[tokio::test]
+async fn toggle_model_disable_last_one() {
     let all_models = vec!["only-model".to_string()];
 
     // Start with only model enabled
-    save_enabled_models("openai", &["only-model".to_string()]).unwrap();
+    save_enabled_models("openai", &["only-model".to_string()])
+        .await
+        .unwrap();
 
     // Disable it
-    toggle_model("openai", "only-model", false, &all_models).unwrap();
+    toggle_model("openai", "only-model", false, &all_models)
+        .await
+        .unwrap();
 
-    assert!(!is_model_enabled("openai", "only-model"));
+    assert!(!is_model_enabled("openai", "only-model").await);
 }
 
 // Edge cases
@@ -633,26 +593,22 @@ fn many_targets_in_rule() {
     assert_eq!(rule.targets.len(), 50);
 }
 
-#[test]
-fn enabled_models_empty_list() {
-    let _ = init();
-
-    save_enabled_models("openai", &[]).unwrap();
+#[tokio::test]
+async fn enabled_models_empty_list() {
+    save_enabled_models("openai", &[]).await.unwrap();
 
     // Empty list means none enabled
-    assert!(!is_model_enabled("openai", "any-model"));
+    assert!(!is_model_enabled("openai", "any-model").await);
 }
 
-#[test]
-fn resolve_alias_with_unicode() {
-    let _ = init();
-
+#[tokio::test]
+async fn resolve_alias_with_unicode() {
     let targets = vec![RouteTarget {
         provider_id: "dashscope".to_string(),
         model_id: "qwen-max".to_string(),
     }];
-    set_route_rules("中文别名", targets).unwrap();
+    set_route_rules("中文别名", targets).await.unwrap();
 
-    let result = resolve_alias("中文别名").unwrap();
+    let result = resolve_alias("中文别名").await.unwrap();
     assert_eq!(result.0, "dashscope");
 }

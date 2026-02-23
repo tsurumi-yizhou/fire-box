@@ -4,12 +4,12 @@
 //! supporting ordered failover targets.
 
 use std::collections::HashMap;
-use std::sync::RwLock;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use tokio::sync::{OnceCell, RwLock};
 
-use crate::middleware::store;
+use crate::middleware::config;
 
 /// A route target: provider + model pair.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -33,7 +33,46 @@ pub struct ModelEnabledState {
 }
 
 // Store data in memory with file persistence
-static ROUTE_DATA: RwLock<Option<RouteData>> = RwLock::new(None);
+// Uses OnceCell for thread-safe lazy async initialization
+static ROUTE_DATA: OnceCell<RwLock<RouteData>> = OnceCell::const_new();
+
+/// Ensure route data is initialized, loading from store if necessary.
+/// This is called automatically by all public functions.
+async fn ensure_initialized() {
+    ROUTE_DATA
+        .get_or_init(|| async {
+            let data = match config::load_config().await {
+                Ok(store_data) => {
+                    let mut rules = HashMap::new();
+                    for (alias, json) in store_data.route_rules {
+                        match serde_json::from_str::<RouteRule>(&json) {
+                            Ok(rule) => {
+                                rules.insert(alias, rule);
+                            }
+                            Err(e) => {
+                                log::warn!(
+                                    "Failed to parse route rule for alias '{}': {}",
+                                    alias,
+                                    e
+                                );
+                            }
+                        }
+                    }
+
+                    RouteData {
+                        rules,
+                        enabled_models: store_data.enabled_models,
+                    }
+                }
+                Err(e) => {
+                    log::warn!("Failed to load route data from store: {}", e);
+                    RouteData::default()
+                }
+            };
+            RwLock::new(data)
+        })
+        .await;
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct RouteData {
@@ -47,75 +86,59 @@ struct RouteData {
 // Route rules management
 // ---------------------------------------------------------------------------
 
-/// Initialize route storage from file.
-pub fn init() -> Result<()> {
-    let store_data = store::load()?;
-
-    let mut rules = HashMap::new();
-    for (alias, json) in store_data.route_rules {
-        match serde_json::from_str::<RouteRule>(&json) {
-            Ok(rule) => {
-                rules.insert(alias, rule);
-            }
-            Err(e) => {
-                log::warn!("Failed to parse route rule for alias '{}': {}", alias, e);
-            }
-        }
-    }
-
-    let data = RouteData {
-        rules,
-        enabled_models: store_data.enabled_models,
-    };
-
-    *ROUTE_DATA.write().unwrap() = Some(data);
-    Ok(())
-}
-
 /// Set route rules for a specific alias.
-pub fn set_route_rules(alias: &str, targets: Vec<RouteTarget>) -> Result<()> {
-    let mut data = ROUTE_DATA.write().unwrap();
-    let data = data.as_mut().unwrap();
+pub async fn set_route_rules(alias: &str, targets: Vec<RouteTarget>) -> Result<()> {
+    ensure_initialized().await;
+    {
+        let lock = ROUTE_DATA.get().expect("ROUTE_DATA should be initialized");
+        let mut data = lock.write().await;
 
-    let rule = RouteRule {
-        alias: alias.to_string(),
-        targets,
-    };
-    data.rules.insert(alias.to_string(), rule);
+        let rule = RouteRule {
+            alias: alias.to_string(),
+            targets,
+        };
+        data.rules.insert(alias.to_string(), rule);
+    } // Drop lock before persisting
 
     // Persist to store
-    persist()?;
+    persist().await?;
     Ok(())
 }
 
 /// Get route rules for a specific alias.
-pub fn get_route_rules(alias: &str) -> Result<Option<RouteRule>> {
-    let data = ROUTE_DATA.read().unwrap();
-    let data = data.as_ref().unwrap();
+pub async fn get_route_rules(alias: &str) -> Result<Option<RouteRule>> {
+    ensure_initialized().await;
+    let lock = ROUTE_DATA.get().expect("ROUTE_DATA should be initialized");
+    let data = lock.read().await;
     Ok(data.rules.get(alias).cloned())
 }
 
 /// Get all route rules.
-pub fn get_all_rules() -> Result<Vec<RouteRule>> {
-    let data = ROUTE_DATA.read().unwrap();
-    let data = data.as_ref().unwrap();
+pub async fn get_all_rules() -> Result<Vec<RouteRule>> {
+    ensure_initialized().await;
+    let lock = ROUTE_DATA.get().expect("ROUTE_DATA should be initialized");
+    let data = lock.read().await;
     Ok(data.rules.values().cloned().collect())
 }
 
 /// Delete route rules for an alias.
-pub fn delete_route_rules(alias: &str) -> Result<()> {
-    let mut data = ROUTE_DATA.write().unwrap();
-    let data = data.as_mut().unwrap();
-    data.rules.remove(alias);
-    persist()?;
+pub async fn delete_route_rules(alias: &str) -> Result<()> {
+    ensure_initialized().await;
+    {
+        let lock = ROUTE_DATA.get().expect("ROUTE_DATA should be initialized");
+        let mut data = lock.write().await;
+        data.rules.remove(alias);
+    } // Drop lock
+
+    persist().await?;
     Ok(())
 }
 
 /// Resolve an alias to a target.
 /// Returns the first available target (no health checking).
 /// Returns (provider_id, model_id) on success.
-pub fn resolve_alias(alias: &str) -> Result<(String, String)> {
-    let rules = get_route_rules(alias)?;
+pub async fn resolve_alias(alias: &str) -> Result<(String, String)> {
+    let rules = get_route_rules(alias).await?;
     match rules {
         Some(rule) => {
             if rule.targets.is_empty() {
@@ -136,8 +159,11 @@ pub fn resolve_alias(alias: &str) -> Result<(String, String)> {
 
 /// Get the next target for failover.
 /// Returns None if no more targets.
-pub fn get_next_target(alias: &str, current_provider_id: &str) -> Result<Option<(String, String)>> {
-    let rules = get_route_rules(alias)?;
+pub async fn get_next_target(
+    alias: &str,
+    current_provider_id: &str,
+) -> Result<Option<(String, String)>> {
+    let rules = get_route_rules(alias).await?;
     match rules {
         Some(rule) => {
             let current_idx = rule
@@ -162,41 +188,44 @@ pub fn get_next_target(alias: &str, current_provider_id: &str) -> Result<Option<
 // ---------------------------------------------------------------------------
 
 /// Load the set of enabled models for a provider.
-pub fn load_enabled_models(provider_id: &str) -> Option<Vec<String>> {
-    let data = ROUTE_DATA.read().unwrap();
-    data.as_ref()
-        .unwrap()
-        .enabled_models
-        .get(provider_id)
-        .cloned()
+pub async fn load_enabled_models(provider_id: &str) -> Option<Vec<String>> {
+    ensure_initialized().await;
+    let lock = ROUTE_DATA.get()?;
+    let data = lock.read().await;
+    data.enabled_models.get(provider_id).cloned()
 }
 
 /// Save the set of enabled models for a provider.
-pub fn save_enabled_models(provider_id: &str, models: &[String]) -> Result<()> {
-    let mut data = ROUTE_DATA.write().unwrap();
-    let data = data.as_mut().unwrap();
-    data.enabled_models
-        .insert(provider_id.to_string(), models.to_vec());
-    persist()?;
+pub async fn save_enabled_models(provider_id: &str, models: &[String]) -> Result<()> {
+    ensure_initialized().await;
+    {
+        let lock = ROUTE_DATA.get().expect("ROUTE_DATA should be initialized");
+        let mut data = lock.write().await;
+        data.enabled_models
+            .insert(provider_id.to_string(), models.to_vec());
+    }
+    persist().await?;
     Ok(())
 }
 
 /// Check if a model is enabled for a provider.
-pub fn is_model_enabled(provider_id: &str, model_id: &str) -> bool {
-    match load_enabled_models(provider_id) {
+pub async fn is_model_enabled(provider_id: &str, model_id: &str) -> bool {
+    match load_enabled_models(provider_id).await {
         Some(enabled) => enabled.iter().any(|m| m == model_id),
         None => true, // None means all enabled
     }
 }
 
 /// Toggle a model's enabled state.
-pub fn toggle_model(
+pub async fn toggle_model(
     provider_id: &str,
     model_id: &str,
     enabled: bool,
     all_models: &[String],
 ) -> Result<()> {
-    let mut current = load_enabled_models(provider_id).unwrap_or_else(|| all_models.to_vec());
+    let mut current = load_enabled_models(provider_id)
+        .await
+        .unwrap_or_else(|| all_models.to_vec());
     if enabled {
         if !current.iter().any(|m| m == model_id) {
             current.push(model_id.to_string());
@@ -204,21 +233,23 @@ pub fn toggle_model(
     } else {
         current.retain(|m| m != model_id);
     }
-    save_enabled_models(provider_id, &current)
+    save_enabled_models(provider_id, &current).await
 }
 
 /// List all enabled models for a provider.
-pub fn list_enabled_models(provider_id: &str, all_models: &[String]) -> Vec<String> {
-    match load_enabled_models(provider_id) {
+pub async fn list_enabled_models(provider_id: &str, all_models: &[String]) -> Vec<String> {
+    match load_enabled_models(provider_id).await {
         Some(enabled) => enabled,
         None => all_models.to_vec(),
     }
 }
 
 /// Persist route data to store.
-fn persist() -> Result<()> {
-    let data_guard = ROUTE_DATA.read().unwrap();
-    if let Some(data) = data_guard.as_ref() {
+async fn persist() -> Result<()> {
+    let (rules_map, enabled_models) = {
+        let lock = ROUTE_DATA.get().expect("ROUTE_DATA should be initialized");
+        let data = lock.read().await;
+
         // Serialize rules to JSON strings
         let rules_map: HashMap<String, String> = data
             .rules
@@ -231,13 +262,15 @@ fn persist() -> Result<()> {
             })
             .collect();
 
-        let enabled_models = data.enabled_models.clone();
+        (rules_map, data.enabled_models.clone())
+    }; // Drop lock
 
-        store::update(|store| {
-            store.route_rules = rules_map;
-            store.enabled_models = enabled_models;
-        })?;
-    }
+    config::update_config(move |store| {
+        store.route_rules = rules_map;
+        store.enabled_models = enabled_models;
+    })
+    .await?;
+
     Ok(())
 }
 
@@ -245,16 +278,25 @@ fn persist() -> Result<()> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_resolve_alias_without_rule() {
-        let _ = init();
-        let result = resolve_alias("gpt-4").unwrap();
+    /// Helper to reset route data between tests
+    async fn reset_route_data() {
+        if let Some(lock) = ROUTE_DATA.get() {
+            let mut data = lock.write().await;
+            data.rules.clear();
+            data.enabled_models.clear();
+        }
+    }
+
+    #[tokio::test]
+    async fn test_resolve_alias_without_rule() {
+        reset_route_data().await;
+        let result = resolve_alias("gpt-4").await.unwrap();
         assert_eq!(result, ("default".to_string(), "gpt-4".to_string()));
     }
 
-    #[test]
-    fn test_resolve_alias_with_rule() {
-        let _ = init();
+    #[tokio::test]
+    async fn test_resolve_alias_with_rule() {
+        reset_route_data().await;
         let targets = vec![
             RouteTarget {
                 provider_id: "openai".to_string(),
@@ -265,15 +307,15 @@ mod tests {
                 model_id: "claude-3".to_string(),
             },
         ];
-        set_route_rules("my-model", targets).unwrap();
+        set_route_rules("my-model", targets).await.unwrap();
 
-        let result = resolve_alias("my-model").unwrap();
+        let result = resolve_alias("my-model").await.unwrap();
         assert_eq!(result, ("openai".to_string(), "gpt-4".to_string()));
     }
 
-    #[test]
-    fn test_get_next_target() {
-        let _ = init();
+    #[tokio::test]
+    async fn test_get_next_target() {
+        reset_route_data().await;
         let targets = vec![
             RouteTarget {
                 provider_id: "openai".to_string(),
@@ -284,29 +326,31 @@ mod tests {
                 model_id: "claude-3".to_string(),
             },
         ];
-        set_route_rules("my-model", targets).unwrap();
+        set_route_rules("my-model", targets).await.unwrap();
 
-        let next = get_next_target("my-model", "openai").unwrap();
+        let next = get_next_target("my-model", "openai").await.unwrap();
         assert_eq!(
             next,
             Some(("anthropic".to_string(), "claude-3".to_string()))
         );
 
-        let next = get_next_target("my-model", "anthropic").unwrap();
+        let next = get_next_target("my-model", "anthropic").await.unwrap();
         assert_eq!(next, None);
     }
 
-    #[test]
-    fn test_model_enabled() {
-        let _ = init();
+    #[tokio::test]
+    async fn test_model_enabled() {
+        reset_route_data().await;
         let _all_models = ["gpt-4".to_string(), "gpt-3.5".to_string()];
 
         // All enabled by default
-        assert!(is_model_enabled("openai", "gpt-4"));
+        assert!(is_model_enabled("openai", "gpt-4").await);
 
         // Enable specific models
-        save_enabled_models("openai", &["gpt-4".to_string()]).unwrap();
-        assert!(is_model_enabled("openai", "gpt-4"));
-        assert!(!is_model_enabled("openai", "gpt-3.5"));
+        save_enabled_models("openai", &["gpt-4".to_string()])
+            .await
+            .unwrap();
+        assert!(is_model_enabled("openai", "gpt-4").await);
+        assert!(!is_model_enabled("openai", "gpt-3.5").await);
     }
 }

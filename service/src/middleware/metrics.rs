@@ -7,11 +7,12 @@
 //! - Cost estimates per provider/model
 
 use std::collections::HashMap;
+use std::sync::LazyLock;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{LazyLock, RwLock};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
+use tokio::sync::RwLock as AsyncRwLock;
 
 /// Metrics snapshot for a time window.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -48,10 +49,10 @@ pub struct MetricsCollector {
     completion_tokens: AtomicU64,
     latency_sum_ms: AtomicU64,
     latency_count: AtomicU64,
-    cost_total: AtomicU64, // Stored as cents * 100 for precision
+    cost_total_microcents: AtomicU64, // Stored as microcents (millionths of a dollar) for precision
 
-    // Per-provider/model breakdown
-    provider_metrics: RwLock<HashMap<String, ProviderMetricsInner>>,
+    // Per-provider/model breakdown - use async RwLock to avoid blocking
+    provider_metrics: AsyncRwLock<HashMap<String, ProviderMetricsInner>>,
 }
 
 #[derive(Debug, Default)]
@@ -60,7 +61,7 @@ struct ProviderMetricsInner {
     requests_failed: AtomicU64,
     prompt_tokens: AtomicU64,
     completion_tokens: AtomicU64,
-    cost_total: AtomicU64,
+    cost_total_microcents: AtomicU64, // Stored as microcents (millionths of a dollar)
 }
 
 impl Clone for ProviderMetricsInner {
@@ -70,7 +71,9 @@ impl Clone for ProviderMetricsInner {
             requests_failed: AtomicU64::new(self.requests_failed.load(Ordering::Relaxed)),
             prompt_tokens: AtomicU64::new(self.prompt_tokens.load(Ordering::Relaxed)),
             completion_tokens: AtomicU64::new(self.completion_tokens.load(Ordering::Relaxed)),
-            cost_total: AtomicU64::new(self.cost_total.load(Ordering::Relaxed)),
+            cost_total_microcents: AtomicU64::new(
+                self.cost_total_microcents.load(Ordering::Relaxed),
+            ),
         }
     }
 }
@@ -87,7 +90,7 @@ impl MetricsCollector {
         prompt_tokens: u32,
         completion_tokens: u32,
         latency: Duration,
-        cost_cents: f64,
+        cost_usd: f64,
     ) {
         self.requests_total.fetch_add(1, Ordering::Relaxed);
         self.requests_success.fetch_add(1, Ordering::Relaxed);
@@ -98,33 +101,26 @@ impl MetricsCollector {
         self.latency_sum_ms
             .fetch_add(latency.as_millis() as u64, Ordering::Relaxed);
         self.latency_count.fetch_add(1, Ordering::Relaxed);
-        // Store cost as integer cents * 100
-        let cost_int = (cost_cents * 100.0) as u64;
-        self.cost_total.fetch_add(cost_int, Ordering::Relaxed);
+        // Store cost as microcents (millionths of a dollar) for 6 decimal places of precision
+        let cost_microcents = (cost_usd * 1_000_000.0).round() as u64;
+        self.cost_total_microcents
+            .fetch_add(cost_microcents, Ordering::Relaxed);
     }
 
     /// Record a successful request with provider/model breakdown.
-    pub fn record_success_with_breakdown(
+    pub async fn record_success_with_breakdown(
         &self,
         provider_id: &str,
         model_id: Option<&str>,
         prompt_tokens: u32,
         completion_tokens: u32,
         latency: Duration,
-        cost_cents: f64,
+        cost_usd: f64,
     ) {
-        // Record global metrics
-        self.record_success(prompt_tokens, completion_tokens, latency, cost_cents);
-
-        // Record per-provider breakdown
+        // Record per-provider breakdown first (while holding lock)
         let key = format!("{}:{}", provider_id, model_id.unwrap_or(""));
-        let metrics = self
-            .provider_metrics
-            .read()
-            .unwrap()
-            .get(&key)
-            .cloned()
-            .unwrap_or_default();
+        let mut lock = self.provider_metrics.write().await;
+        let metrics = lock.entry(key).or_default();
 
         metrics.requests_total.fetch_add(1, Ordering::Relaxed);
         metrics
@@ -133,14 +129,14 @@ impl MetricsCollector {
         metrics
             .completion_tokens
             .fetch_add(completion_tokens as u64, Ordering::Relaxed);
-        let cost_int = (cost_cents * 100.0) as u64;
-        metrics.cost_total.fetch_add(cost_int, Ordering::Relaxed);
+        let cost_microcents = (cost_usd * 1_000_000.0).round() as u64;
+        metrics
+            .cost_total_microcents
+            .fetch_add(cost_microcents, Ordering::Relaxed);
+        drop(lock); // Release lock before recording global metrics
 
-        // Insert if not exists
-        if !self.provider_metrics.read().unwrap().contains_key(&key) {
-            let mut lock = self.provider_metrics.write().unwrap();
-            lock.insert(key, metrics);
-        }
+        // Record global metrics (atomic operations, no lock needed)
+        self.record_success(prompt_tokens, completion_tokens, latency, cost_usd);
     }
 
     /// Record a failed request.
@@ -153,33 +149,23 @@ impl MetricsCollector {
     }
 
     /// Record a failed request with provider breakdown.
-    pub fn record_failure_with_breakdown(
+    pub async fn record_failure_with_breakdown(
         &self,
         provider_id: &str,
         model_id: Option<&str>,
         latency: Duration,
     ) {
-        // Record global metrics
-        self.record_failure(latency);
-
-        // Record per-provider breakdown
+        // Record per-provider breakdown first (while holding lock)
         let key = format!("{}:{}", provider_id, model_id.unwrap_or(""));
-        let metrics = self
-            .provider_metrics
-            .read()
-            .unwrap()
-            .get(&key)
-            .cloned()
-            .unwrap_or_default();
+        let mut lock = self.provider_metrics.write().await;
+        let metrics = lock.entry(key).or_default();
 
         metrics.requests_total.fetch_add(1, Ordering::Relaxed);
         metrics.requests_failed.fetch_add(1, Ordering::Relaxed);
+        drop(lock); // Release lock before recording global metrics
 
-        // Insert if not exists
-        if !self.provider_metrics.read().unwrap().contains_key(&key) {
-            let mut lock = self.provider_metrics.write().unwrap();
-            lock.insert(key, metrics);
-        }
+        // Record global metrics (atomic operations, no lock needed)
+        self.record_failure(latency);
     }
 
     /// Get current metrics snapshot.
@@ -190,7 +176,7 @@ impl MetricsCollector {
         let completion_tokens = self.completion_tokens.load(Ordering::Relaxed);
         let latency_sum = self.latency_sum_ms.load(Ordering::Relaxed);
         let latency_count = self.latency_count.load(Ordering::Relaxed);
-        let cost_int = self.cost_total.load(Ordering::Relaxed);
+        let cost_microcents = self.cost_total_microcents.load(Ordering::Relaxed);
 
         let latency_avg_ms = if latency_count > 0 {
             latency_sum / latency_count
@@ -206,15 +192,14 @@ impl MetricsCollector {
             prompt_tokens_total: prompt_tokens,
             completion_tokens_total: completion_tokens,
             latency_avg_ms,
-            cost_total: (cost_int as f64) / 100.0,
+            cost_total: (cost_microcents as f64) / 1_000_000.0,
         }
     }
 
     /// Get metrics breakdown by provider.
-    pub fn get_provider_metrics(&self) -> Vec<ProviderMetrics> {
-        self.provider_metrics
-            .read()
-            .unwrap()
+    pub async fn get_provider_metrics(&self) -> Vec<ProviderMetrics> {
+        let lock = self.provider_metrics.read().await;
+        let result = lock
             .iter()
             .map(|(key, metrics)| {
                 let parts: Vec<&str> = key.split(':').collect();
@@ -231,14 +216,17 @@ impl MetricsCollector {
                     requests_failed: metrics.requests_failed.load(Ordering::Relaxed),
                     prompt_tokens_total: metrics.prompt_tokens.load(Ordering::Relaxed),
                     completion_tokens_total: metrics.completion_tokens.load(Ordering::Relaxed),
-                    cost_total: (metrics.cost_total.load(Ordering::Relaxed) as f64) / 100.0,
+                    cost_total: (metrics.cost_total_microcents.load(Ordering::Relaxed) as f64)
+                        / 1_000_000.0,
                 }
             })
-            .collect()
+            .collect();
+        drop(lock);
+        result
     }
 
     /// Reset all counters.
-    pub fn reset(&self) {
+    pub async fn reset(&self) {
         self.requests_total.store(0, Ordering::Relaxed);
         self.requests_success.store(0, Ordering::Relaxed);
         self.requests_failed.store(0, Ordering::Relaxed);
@@ -246,8 +234,8 @@ impl MetricsCollector {
         self.completion_tokens.store(0, Ordering::Relaxed);
         self.latency_sum_ms.store(0, Ordering::Relaxed);
         self.latency_count.store(0, Ordering::Relaxed);
-        self.cost_total.store(0, Ordering::Relaxed);
-        self.provider_metrics.write().unwrap().clear();
+        self.cost_total_microcents.store(0, Ordering::Relaxed);
+        self.provider_metrics.write().await.clear();
     }
 }
 
@@ -303,8 +291,8 @@ static COLLECTOR: LazyLock<MetricsCollector> = LazyLock::new(|| MetricsCollector
     completion_tokens: AtomicU64::new(0),
     latency_sum_ms: AtomicU64::new(0),
     latency_count: AtomicU64::new(0),
-    cost_total: AtomicU64::new(0),
-    provider_metrics: RwLock::new(HashMap::new()),
+    cost_total_microcents: AtomicU64::new(0),
+    provider_metrics: AsyncRwLock::new(HashMap::new()),
 });
 
 /// Get the global metrics collector.
@@ -325,12 +313,22 @@ pub fn get_snapshot() -> MetricsSnapshot {
     global_collector().snapshot(0, now.as_millis() as u64)
 }
 
+/// Get metrics breakdown by provider from the global collector.
+pub async fn get_provider_metrics() -> Vec<ProviderMetrics> {
+    global_collector().get_provider_metrics().await
+}
+
+/// Reset all counters in the global collector.
+pub async fn reset_global_metrics() {
+    global_collector().reset().await;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_metrics_collector() {
+    #[tokio::test]
+    async fn test_metrics_collector() {
         let collector = MetricsCollector::new();
 
         collector.record_success(100, 50, Duration::from_millis(200), 0.05);

@@ -2,7 +2,7 @@ use anyhow::{Result, bail};
 use futures_util::stream;
 use serde::{Deserialize, Serialize};
 
-use crate::middleware::keyring as secure_keyring;
+use crate::middleware::storage;
 use crate::providers::{
     BoxStream, ChatMessage, Choice, CompletionRequest, CompletionResponse, EmbeddingRequest,
     EmbeddingResponse, Provider, RetryConfig, StreamEvent, Usage, with_retry,
@@ -16,16 +16,19 @@ pub struct AnthropicProvider {
 
 impl AnthropicProvider {
     /// Create a new Anthropic provider with the given API key.
-    pub fn new(api_key: String) -> Self {
+    pub fn new(api_key: impl Into<String>) -> Self {
         Self {
-            api_key,
+            api_key: api_key.into(),
             base_url: "https://api.anthropic.com/v1".to_string(),
         }
     }
 
     /// Create a new Anthropic provider with a custom base URL.
-    pub fn with_base_url(api_key: String, base_url: String) -> Self {
-        Self { api_key, base_url }
+    pub fn with_base_url(api_key: impl Into<String>, base_url: String) -> Self {
+        Self {
+            api_key: api_key.into(),
+            base_url,
+        }
     }
 
     /// Return the configured base URL.
@@ -39,20 +42,20 @@ impl AnthropicProvider {
     }
 
     // -----------------------------------------------------------------------
-    // Keyring helpers
+    // Secure storage helpers
     // -----------------------------------------------------------------------
 
-    /// Persist the API key in the OS keyring.
+    /// Persist the API key in platform-specific secure storage with biometric protection.
     pub fn save_to_keyring(&self) -> Result<()> {
-        secure_keyring::set_password("fire-box-anthropic", "api-key", &self.api_key)
+        storage::set_secret_with_biometric("fire-box-anthropic", "api-key", &self.api_key)
             .map_err(|e| anyhow::anyhow!("failed to save Anthropic key: {e}"))
     }
 
-    /// Load the API key from the OS keyring and construct a provider.
+    /// Load the API key from platform-specific secure storage and construct a provider.
     pub fn from_keyring() -> Result<Self> {
-        let key = secure_keyring::get_password("fire-box-anthropic", "api-key")
+        let key = storage::get_secret("fire-box-anthropic", "api-key")
             .map_err(|e| anyhow::anyhow!("failed to load Anthropic key: {e}"))?;
-        Ok(Self::new(key))
+        Ok(Self::new(key.as_str()))
     }
 
     // -----------------------------------------------------------------------
@@ -235,81 +238,99 @@ impl Provider for AnthropicProvider {
 
         let event_stream = response.bytes_stream();
 
-        let stream = stream::unfold(event_stream, |mut stream| async move {
-            use futures_util::stream::StreamExt;
+        // Buffer to accumulate partial lines across chunks
+        let stream = stream::unfold(
+            (event_stream, String::new()),
+            |(mut stream, mut buffer)| async move {
+                use futures_util::stream::StreamExt;
 
-            while let Some(chunk_result) = stream.next().await {
-                match chunk_result {
-                    Ok(chunk) => {
-                        let text = String::from_utf8_lossy(&chunk);
-                        for line in text.lines() {
-                            let line = line.trim();
-                            if line.is_empty() {
-                                continue;
-                            }
+                while let Some(chunk_result) = stream.next().await {
+                    match chunk_result {
+                        Ok(chunk) => {
+                            let text = String::from_utf8_lossy(&chunk);
+                            buffer.push_str(&text);
 
-                            // Anthropic uses "data: " prefix for SSE
-                            if !line.starts_with("data: ") {
-                                continue;
-                            }
+                            // Process complete lines only
+                            while let Some(newline_pos) = buffer.find('\n') {
+                                let line = buffer[..newline_pos].trim().to_string();
+                                buffer.drain(..=newline_pos);
 
-                            let data = &line[6..];
-                            if data == "[DONE]" {
-                                return Some((Ok(StreamEvent::Done), stream));
-                            }
+                                if line.is_empty() {
+                                    continue;
+                                }
 
-                            match serde_json::from_str::<serde_json::Value>(data) {
-                                Ok(json) => {
-                                    let event_type = json.get("type").and_then(|v| v.as_str());
-                                    match event_type {
-                                        Some("content_block_delta") => {
-                                            if let Some(delta) = json.get("delta")
-                                                && let Some(text) = delta.get("text")
-                                                && let Some(text_str) = text.as_str()
-                                                && !text_str.is_empty()
-                                            {
+                                // Anthropic uses "data: " prefix for SSE
+                                if !line.starts_with("data: ") {
+                                    continue;
+                                }
+
+                                let data = &line[6..];
+                                if data == "[DONE]" {
+                                    return Some((Ok(StreamEvent::Done), (stream, buffer)));
+                                }
+
+                                match serde_json::from_str::<serde_json::Value>(data) {
+                                    Ok(json) => {
+                                        let event_type = json.get("type").and_then(|v| v.as_str());
+                                        match event_type {
+                                            Some("content_block_delta") => {
+                                                if let Some(delta) = json.get("delta")
+                                                    && let Some(text) = delta.get("text")
+                                                    && let Some(text_str) = text.as_str()
+                                                    && !text_str.is_empty()
+                                                {
+                                                    return Some((
+                                                        Ok(StreamEvent::Delta {
+                                                            content: text_str.to_string(),
+                                                        }),
+                                                        (stream, buffer),
+                                                    ));
+                                                }
+                                            }
+                                            Some("message_stop") => {
                                                 return Some((
-                                                    Ok(StreamEvent::Delta {
-                                                        content: text_str.to_string(),
-                                                    }),
-                                                    stream,
+                                                    Ok(StreamEvent::Done),
+                                                    (stream, buffer),
                                                 ));
                                             }
+                                            Some("error") => {
+                                                let msg = json
+                                                    .get("error")
+                                                    .and_then(|e| e.get("message"))
+                                                    .and_then(|m| m.as_str())
+                                                    .unwrap_or("Unknown error");
+                                                return Some((
+                                                    Err(anyhow::anyhow!(
+                                                        "Anthropic error: {}",
+                                                        msg
+                                                    )),
+                                                    (stream, buffer),
+                                                ));
+                                            }
+                                            _ => {}
                                         }
-                                        Some("message_stop") => {
-                                            return Some((Ok(StreamEvent::Done), stream));
-                                        }
-                                        Some("error") => {
-                                            let msg = json
-                                                .get("error")
-                                                .and_then(|e| e.get("message"))
-                                                .and_then(|m| m.as_str())
-                                                .unwrap_or("Unknown error");
-                                            return Some((
-                                                Err(anyhow::anyhow!("Anthropic error: {}", msg)),
-                                                stream,
-                                            ));
-                                        }
-                                        _ => {}
                                     }
-                                }
-                                Err(e) => {
-                                    return Some((
-                                        Err(anyhow::anyhow!("Failed to parse SSE: {}", e)),
-                                        stream,
-                                    ));
+                                    Err(e) => {
+                                        return Some((
+                                            Err(anyhow::anyhow!("Failed to parse SSE: {}", e)),
+                                            (stream, buffer),
+                                        ));
+                                    }
                                 }
                             }
                         }
-                    }
-                    Err(e) => {
-                        return Some((Err(anyhow::anyhow!("Stream error: {}", e)), stream));
+                        Err(e) => {
+                            return Some((
+                                Err(anyhow::anyhow!("Stream error: {}", e)),
+                                (stream, buffer),
+                            ));
+                        }
                     }
                 }
-            }
 
-            Some((Ok(StreamEvent::Done), stream))
-        });
+                None
+            },
+        );
 
         Ok(Box::pin(stream))
     }

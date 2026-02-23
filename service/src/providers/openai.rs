@@ -1,7 +1,7 @@
 use anyhow::{Result, bail};
 use futures_util::stream;
 
-use crate::middleware::keyring as secure_keyring;
+use crate::middleware::storage;
 use crate::providers::{
     BoxStream, ChatMessage, Choice, CompletionRequest, CompletionResponse, EmbeddingRequest,
     EmbeddingResponse, Provider, RetryConfig, StreamEvent, Usage, with_retry,
@@ -17,9 +17,9 @@ pub struct OpenAiProvider {
 
 impl OpenAiProvider {
     /// Create a new OpenAI provider with the given API key.
-    pub fn new(api_key: String) -> Self {
+    pub fn new(api_key: impl Into<String>) -> Self {
         Self {
-            api_key: Some(api_key),
+            api_key: Some(api_key.into()),
             base_url: "https://api.openai.com/v1".to_string(),
         }
     }
@@ -35,25 +35,25 @@ impl OpenAiProvider {
     }
 
     // -----------------------------------------------------------------------
-    // Keyring helpers
+    // Secure storage helpers
     // -----------------------------------------------------------------------
 
-    /// Persist the API key in the OS keyring.
+    /// Persist the API key in platform-specific secure storage with biometric protection.
     pub fn save_to_keyring(&self, service: &str) -> Result<()> {
         if let Some(ref key) = self.api_key {
-            secure_keyring::set_password(service, "api-key", key)
+            storage::set_secret_with_biometric(service, "api-key", key)
                 .map_err(|e| anyhow::anyhow!("failed to save API key: {e}"))
         } else {
             Ok(())
         }
     }
 
-    /// Load the API key from the OS keyring and construct a provider.
+    /// Load the API key from platform-specific secure storage and construct a provider.
     pub fn from_keyring(service: &str, base_url: &str) -> Result<Self> {
-        let key = secure_keyring::get_password(service, "api-key")
+        let key = storage::get_secret(service, "api-key")
             .map_err(|e| anyhow::anyhow!("failed to load API key: {e}"))?;
         Ok(Self {
-            api_key: Some(key),
+            api_key: Some(key.to_string()),
             base_url: base_url.to_string(),
         })
     }
@@ -218,65 +218,80 @@ impl Provider for OpenAiProvider {
 
         let event_stream = response.bytes_stream();
 
-        let stream = stream::unfold(event_stream, |mut stream| async move {
-            use futures_util::stream::StreamExt;
+        // Buffer to accumulate partial lines across chunks
+        let stream = stream::unfold(
+            (event_stream, String::new()),
+            |(mut stream, mut buffer)| async move {
+                use futures_util::stream::StreamExt;
 
-            while let Some(chunk_result) = stream.next().await {
-                match chunk_result {
-                    Ok(chunk) => {
-                        let text = String::from_utf8_lossy(&chunk);
-                        for line in text.lines() {
-                            let line = line.trim();
-                            if line.is_empty() || !line.starts_with("data: ") {
-                                continue;
-                            }
+                while let Some(chunk_result) = stream.next().await {
+                    match chunk_result {
+                        Ok(chunk) => {
+                            let text = String::from_utf8_lossy(&chunk);
+                            buffer.push_str(&text);
 
-                            let data = &line[6..]; // Skip "data: "
-                            if data == "[DONE]" {
-                                return Some((Ok(StreamEvent::Done), stream));
-                            }
+                            // Process complete lines only
+                            while let Some(newline_pos) = buffer.find('\n') {
+                                let line = buffer[..newline_pos].trim().to_string();
+                                buffer.drain(..=newline_pos);
 
-                            match serde_json::from_str::<serde_json::Value>(data) {
-                                Ok(json) => {
-                                    if let Some(choices) = json["choices"].as_array()
-                                        && let Some(choice) = choices.first()
-                                    {
-                                        if let Some(delta) = choice.get("delta")
-                                            && let Some(content) = delta.get("content")
-                                            && let Some(content_str) = content.as_str()
-                                            && !content_str.is_empty()
+                                if line.is_empty() || !line.starts_with("data: ") {
+                                    continue;
+                                }
+
+                                let data = &line[6..]; // Skip "data: "
+                                if data == "[DONE]" {
+                                    return Some((Ok(StreamEvent::Done), (stream, buffer)));
+                                }
+
+                                match serde_json::from_str::<serde_json::Value>(data) {
+                                    Ok(json) => {
+                                        if let Some(choices) = json["choices"].as_array()
+                                            && let Some(choice) = choices.first()
                                         {
-                                            return Some((
-                                                Ok(StreamEvent::Delta {
-                                                    content: content_str.to_string(),
-                                                }),
-                                                stream,
-                                            ));
-                                        }
-                                        if let Some(finish_reason) = choice.get("finish_reason")
-                                            && finish_reason.is_string()
-                                        {
-                                            return Some((Ok(StreamEvent::Done), stream));
+                                            if let Some(delta) = choice.get("delta")
+                                                && let Some(content) = delta.get("content")
+                                                && let Some(content_str) = content.as_str()
+                                                && !content_str.is_empty()
+                                            {
+                                                return Some((
+                                                    Ok(StreamEvent::Delta {
+                                                        content: content_str.to_string(),
+                                                    }),
+                                                    (stream, buffer),
+                                                ));
+                                            }
+                                            if let Some(finish_reason) = choice.get("finish_reason")
+                                                && finish_reason.is_string()
+                                            {
+                                                return Some((
+                                                    Ok(StreamEvent::Done),
+                                                    (stream, buffer),
+                                                ));
+                                            }
                                         }
                                     }
-                                }
-                                Err(e) => {
-                                    return Some((
-                                        Err(anyhow::anyhow!("Failed to parse SSE: {}", e)),
-                                        stream,
-                                    ));
+                                    Err(e) => {
+                                        return Some((
+                                            Err(anyhow::anyhow!("Failed to parse SSE: {}", e)),
+                                            (stream, buffer),
+                                        ));
+                                    }
                                 }
                             }
                         }
-                    }
-                    Err(e) => {
-                        return Some((Err(anyhow::anyhow!("Stream error: {}", e)), stream));
+                        Err(e) => {
+                            return Some((
+                                Err(anyhow::anyhow!("Stream error: {}", e)),
+                                (stream, buffer),
+                            ));
+                        }
                     }
                 }
-            }
 
-            Some((Ok(StreamEvent::Done), stream))
-        });
+                None
+            },
+        );
 
         Ok(Box::pin(stream))
     }

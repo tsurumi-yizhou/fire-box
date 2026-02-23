@@ -10,7 +10,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-use crate::middleware::store;
+use crate::middleware::config;
 use crate::providers::ProviderDyn;
 use crate::providers::anthropic::AnthropicProvider;
 use crate::providers::copilot::CopilotProvider;
@@ -23,25 +23,30 @@ use crate::providers::openai::OpenAiProvider;
 // ---------------------------------------------------------------------------
 
 /// Load every configured profile ID, in insertion order.
-pub fn load_provider_index() -> Vec<String> {
-    store::load().map(|d| d.provider_index).unwrap_or_default()
+pub async fn load_provider_index() -> Vec<String> {
+    config::load_config()
+        .await
+        .map(|d| d.provider_index)
+        .unwrap_or_default()
 }
 
 /// Add `profile_id` to the index (no-op if already present).
-pub fn add_to_provider_index(profile_id: &str) -> Result<()> {
-    store::update(|d| {
+pub async fn add_to_provider_index(profile_id: &str) -> Result<()> {
+    config::update_config(|d| {
         if !d.provider_index.iter().any(|id| id == profile_id) {
             d.provider_index.push(profile_id.to_string());
         }
     })
+    .await
     .map_err(|e| anyhow::anyhow!("failed to add provider to index: {e}"))
 }
 
 /// Remove `profile_id` from the index (no-op if absent).
-pub fn remove_from_provider_index(profile_id: &str) -> Result<()> {
-    store::update(|d| {
+pub async fn remove_from_provider_index(profile_id: &str) -> Result<()> {
+    config::update_config(|d| {
         d.provider_index.retain(|id| id != profile_id);
     })
+    .await
     .map_err(|e| anyhow::anyhow!("failed to remove provider from index: {e}"))
 }
 
@@ -50,33 +55,33 @@ pub fn remove_from_provider_index(profile_id: &str) -> Result<()> {
 /// Checks the five well-known legacy profile IDs and, for OAuth providers,
 /// migrates credentials from their provider-specific keyring locations.
 /// Safe to call on every startup — idempotent.
-pub fn migrate_legacy_providers() {
-    let index = load_provider_index();
+pub async fn migrate_legacy_providers() {
+    let index = load_provider_index().await;
 
     let has = |id: &str| index.iter().any(|x| x == id);
 
     // — API-key providers (already use configure_provider) ——————————————
     for id in ["openai", "anthropic", "llamacpp"] {
-        if !has(id) && provider_is_configured(id) {
-            let _ = add_to_provider_index(id);
+        if !has(id) && provider_is_configured(id).await {
+            let _ = add_to_provider_index(id).await;
         }
     }
 
     // — Copilot: migrate from "fire-box-copilot"/"github-oauth" ————————
     if !has("copilot")
         && let Ok(token) =
-            crate::middleware::keyring::get_password("fire-box-copilot", "github-oauth")
+            crate::middleware::storage::get_secret("fire-box-copilot", "github-oauth")
     {
-        let cfg = ProviderConfig::copilot(token, None);
-        if configure_provider("copilot", &cfg).is_ok() {
-            let _ = add_to_provider_index("copilot");
+        let cfg = ProviderConfig::copilot(token.as_str(), None);
+        if configure_provider("copilot", &cfg).await.is_ok() {
+            let _ = add_to_provider_index("copilot").await;
         }
     }
 
     // — DashScope: migrate from "fire-box-dashscope"/"oauth-credentials" —
     if !has("dashscope")
         && let Ok(json) =
-            crate::middleware::keyring::get_password("fire-box-dashscope", "oauth-credentials")
+            crate::middleware::storage::get_secret("fire-box-dashscope", "oauth-credentials")
         && let Ok(creds) =
             serde_json::from_str::<crate::providers::dashscope::OAuthCredentials>(&json)
     {
@@ -86,8 +91,8 @@ pub fn migrate_legacy_providers() {
             creds.expiry_date.unwrap_or(0),
             creds.resource_url,
         );
-        if configure_provider("dashscope", &cfg).is_ok() {
-            let _ = add_to_provider_index("dashscope");
+        if configure_provider("dashscope", &cfg).await.is_ok() {
+            let _ = add_to_provider_index("dashscope").await;
         }
     }
 }
@@ -157,6 +162,8 @@ pub struct DashScopeConfig {
 pub struct LlamaCppProviderConfig {
     /// Absolute path to the GGUF model file.
     pub model_path: PathBuf,
+    /// Path to the llama-server binary (optional).
+    pub server_path: Option<PathBuf>,
     /// Context window size in tokens (default: 4096).
     #[serde(default = "default_context_size")]
     pub context_size: u32,
@@ -224,9 +231,9 @@ impl ProviderConfig {
     }
 
     /// Human-readable display name for a (profile_id, type) pair.
-    pub fn display_name(profile_id: &str, type_slug: &str) -> String {
+    pub async fn display_name(profile_id: &str, type_slug: &str) -> String {
         // First check if there's a custom display name stored
-        if let Ok(data) = crate::middleware::store::load()
+        if let Ok(data) = config::load_config().await
             && let Some(custom_name) = data.display_names.get(profile_id)
         {
             return custom_name.clone();
@@ -332,6 +339,7 @@ impl ProviderConfig {
     pub fn llamacpp(model_path: impl Into<PathBuf>) -> Self {
         Self::LlamaCpp(LlamaCppProviderConfig {
             model_path: model_path.into(),
+            server_path: None,
             context_size: default_context_size(),
             gpu_layers: None,
             threads: None,
@@ -394,6 +402,7 @@ impl ProviderConfig {
             Self::LlamaCpp(c) => {
                 let cfg = LlamaCppConfig {
                     model_path: c.model_path.clone(),
+                    server_path: c.server_path.clone(),
                     context_size: c.context_size,
                     gpu_layers: c.gpu_layers,
                     threads: c.threads,
@@ -418,12 +427,13 @@ impl ProviderConfig {
 ///
 /// # Errors
 /// Returns an error if the store file cannot be written or serialisation fails.
-pub fn configure_provider(profile: &str, config: &ProviderConfig) -> Result<()> {
+pub async fn configure_provider(profile: &str, config: &ProviderConfig) -> Result<()> {
     let json = config.to_json()?;
     let profile = profile.to_string();
-    store::update(move |d| {
+    config::update_config(move |d| {
         d.providers.insert(profile.clone(), json.clone());
     })
+    .await
     .map_err(|e| anyhow::anyhow!("failed to store provider config: {e}"))
 }
 
@@ -433,8 +443,8 @@ pub fn configure_provider(profile: &str, config: &ProviderConfig) -> Result<()> 
 /// # Errors
 /// Returns an error if the profile does not exist or the stored JSON cannot be
 /// deserialised.
-pub fn load_provider(profile: &str) -> Result<Arc<dyn ProviderDyn>> {
-    let config = load_provider_config(profile)?;
+pub async fn load_provider(profile: &str) -> Result<Arc<dyn ProviderDyn>> {
+    let config = load_provider_config(profile).await?;
     Ok(config.build())
 }
 
@@ -442,8 +452,10 @@ pub fn load_provider(profile: &str) -> Result<Arc<dyn ProviderDyn>> {
 /// instantiating.
 ///
 /// Useful for inspecting or modifying an existing profile.
-pub fn load_provider_config(profile: &str) -> Result<ProviderConfig> {
-    let data = store::load().map_err(|e| anyhow::anyhow!("failed to load store: {e}"))?;
+pub async fn load_provider_config(profile: &str) -> Result<ProviderConfig> {
+    let data = config::load_config()
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to load store: {e}"))?;
     let json = data
         .providers
         .get(profile)
@@ -452,11 +464,12 @@ pub fn load_provider_config(profile: &str) -> Result<ProviderConfig> {
 }
 
 /// Remove a provider profile from the encrypted local store.
-pub fn remove_provider(profile: &str) -> Result<()> {
+pub async fn remove_provider(profile: &str) -> Result<()> {
     let profile = profile.to_string();
-    store::update(move |d| {
+    config::update_config(move |d| {
         d.providers.remove(&profile);
     })
+    .await
     .map_err(|e| anyhow::anyhow!("failed to delete provider config: {e}"))
 }
 
@@ -467,12 +480,12 @@ pub fn remove_provider(profile: &str) -> Result<()> {
 ///
 /// # Errors
 /// Returns an error if the profile doesn't exist or serialization fails.
-pub fn update_provider_metadata(
+pub async fn update_provider_metadata(
     profile: &str,
     new_name: Option<String>,
     new_base_url: Option<String>,
 ) -> Result<()> {
-    let mut config = load_provider_config(profile)?;
+    let mut config = load_provider_config(profile).await?;
 
     // Update base_url if provided
     if let Some(base_url) = new_base_url {
@@ -487,16 +500,19 @@ pub fn update_provider_metadata(
                 // Other providers don't support base_url customization
             }
         }
-        configure_provider(profile, &config)?;
+        configure_provider(profile, &config).await?;
     }
 
     // Update display name if provided
     if let Some(name) = new_name {
-        let mut data = store::load().map_err(|e| anyhow::anyhow!("failed to load store: {e}"))?;
+        let mut data = config::load_config()
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to load store: {e}"))?;
         data.display_names.insert(profile.to_string(), name);
-        store::update(move |d| {
+        config::update_config(move |d| {
             d.display_names.extend(data.display_names);
         })
+        .await
         .map_err(|e| anyhow::anyhow!("failed to update display name: {e}"))?;
     }
 
@@ -504,8 +520,8 @@ pub fn update_provider_metadata(
 }
 
 /// Returns `true` if a provider profile is present (and parseable) in the store.
-pub fn provider_is_configured(profile: &str) -> bool {
-    load_provider_config(profile).is_ok()
+pub async fn provider_is_configured(profile: &str) -> bool {
+    load_provider_config(profile).await.is_ok()
 }
 
 // ---------------------------------------------------------------------------

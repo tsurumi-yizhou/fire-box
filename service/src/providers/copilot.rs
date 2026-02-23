@@ -14,7 +14,7 @@ use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
-use crate::middleware::keyring as secure_keyring;
+use crate::middleware::storage;
 use crate::providers::{
     BoxStream, CompletionRequest, CompletionResponse, EmbeddingRequest, EmbeddingResponse,
     Provider, StreamEvent,
@@ -32,14 +32,18 @@ const DEFAULT_CLIENT_ID: &str = "Iv1.b507a08c87ecfe98";
 const KEYRING_SERVICE: &str = "fire-box-copilot";
 const KEYRING_GITHUB_USER: &str = "github-oauth";
 
+/// Version string used in API requests, derived from package version at compile time.
+const FIREBOX_VERSION: &str = concat!("fire-box/", env!("CARGO_PKG_VERSION"));
+
 fn store_credential(service: &str, user: &str, secret: &str) -> Result<()> {
-    secure_keyring::set_password(service, user, secret)
+    storage::set_secret_with_biometric(service, user, secret)
         .map_err(|e| anyhow::anyhow!("failed to store credential: {e}"))
 }
 
 fn retrieve_credential(service: &str, user: &str) -> Result<String> {
-    secure_keyring::get_password(service, user)
-        .map_err(|e| anyhow::anyhow!("failed to retrieve credential: {e}"))
+    let secret = storage::get_secret(service, user)
+        .map_err(|e| anyhow::anyhow!("failed to retrieve credential: {e}"))?;
+    Ok(secret.to_string())
 }
 
 /// Public helper used by the session layer to persist a GitHub OAuth token
@@ -130,9 +134,9 @@ pub struct CopilotProvider {
 
 impl CopilotProvider {
     /// Create a new Copilot provider with an existing OAuth token.
-    pub fn new(oauth_token: String) -> Self {
+    pub fn new(oauth_token: impl Into<String>) -> Self {
         Self {
-            oauth_token,
+            oauth_token: oauth_token.into(),
             endpoint: COPILOT_CHAT_ENDPOINT.to_string(),
             client: Self::build_client(),
             cached_token: Mutex::new(None),
@@ -140,9 +144,9 @@ impl CopilotProvider {
     }
 
     /// Create a new Copilot provider with a custom endpoint.
-    pub fn with_endpoint(oauth_token: String, endpoint: String) -> Self {
+    pub fn with_endpoint(oauth_token: impl Into<String>, endpoint: String) -> Self {
         Self {
-            oauth_token,
+            oauth_token: oauth_token.into(),
             endpoint,
             client: Self::build_client(),
             cached_token: Mutex::new(None),
@@ -262,8 +266,8 @@ impl CopilotProvider {
             .get(COPILOT_TOKEN_URL)
             .header("Authorization", format!("token {github_token}"))
             .header("Accept", "application/json")
-            .header("Editor-Version", "fire-box/0.4.0")
-            .header("Editor-Plugin-Version", "fire-box/0.4.0")
+            .header("Editor-Version", FIREBOX_VERSION)
+            .header("Editor-Plugin-Version", FIREBOX_VERSION)
             .send()
             .await?;
 
@@ -377,7 +381,7 @@ impl Provider for CopilotProvider {
             .post(&url)
             .header("Authorization", format!("Bearer {token}"))
             .header("Content-Type", "application/json")
-            .header("Editor-Version", "fire-box/0.4.0")
+            .header("Editor-Version", FIREBOX_VERSION)
             .header("Copilot-Integration-Id", "fire-box")
             .json(request)
             .send()
@@ -420,7 +424,7 @@ impl Provider for CopilotProvider {
             .post(&url)
             .header("Authorization", format!("Bearer {token}"))
             .header("Content-Type", "application/json")
-            .header("Editor-Version", "fire-box/0.4.0")
+            .header("Editor-Version", FIREBOX_VERSION)
             .header("Copilot-Integration-Id", "fire-box")
             .json(&body)
             .send()
@@ -526,7 +530,7 @@ impl Provider for CopilotProvider {
             .client
             .get(format!("{}/v1/models", self.endpoint))
             .header("Authorization", format!("Bearer {token}"))
-            .header("Editor-Version", "fire-box/0.4.0")
+            .header("Editor-Version", FIREBOX_VERSION)
             .header("Copilot-Integration-Id", "fire-box")
             .send()
             .await?;

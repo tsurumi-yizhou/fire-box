@@ -1,0 +1,27 @@
+# Access Control & Security Model
+
+This document presents a comprehensive examination of the access control and security architecture implemented within the FireBox system. The framework employs a "Trust on First Use" (TOFU) interactive access control methodology, whereby the backend service maintains a persistent allowlist of authorized client applications to ensure secure and controlled access to system resources.
+
+## Overview of the Access Control Mechanism
+
+The access control system operates through a multi-stage verification process designed to authenticate and authorize client applications before granting access to FireBox services. This mechanism balances security requirements with user convenience by implementing an interactive approval workflow for previously unknown applications whilst maintaining seamless access for pre-authorized clients.
+
+## Detailed Access Control Flow
+
+The access control process comprises three distinct phases, each serving a critical function in the overall security architecture. Initially, when a local application attempts to establish an Inter-Process Communication (IPC) connection with the FireBox Service, the service employs operating system-level peer credentials to identify the requesting client. These credentials, which include the Process Identifier (PID), User Identifier (UID), and Group Identifier (GID), are subsequently utilized to resolve the absolute executable path of the client application. On macOS and Windows platforms, this identification process may additionally incorporate code signature verification to enhance security assurance.
+
+Following the initial identification phase, the service conducts an authorization check by consulting its persistent allowlist database. This database contains records of executable paths and signatures for previously authorized applications. The outcome of this verification determines the subsequent course of action: if the application is found within the allowlist, the connection proceeds immediately without user intervention; conversely, if the application has been explicitly denied access, the connection is rejected forthwith. In cases where the application is unknown to the system, representing a first-time connection attempt, the service initiates the user approval workflow.
+
+The user approval workflow constitutes the third and most interactive phase of the access control mechanism. Upon encountering an unknown client, the service temporarily suspends the connection request and launches a platform-specific Helper executable as a child process. This Helper application, which receives the client's identifying information as arguments, presents a native system dialog to the user requesting explicit authorization. The dialog poses a straightforward question regarding whether the user wishes to grant the application access to artificial intelligence capabilities. The user's response, conveyed through the Helper's exit code, determines the final outcome: an exit code of zero indicates approval, resulting in the addition of the client to the allowlist and acceptance of the connection, whereas a non-zero exit code signifies denial, leading to connection rejection.
+
+## The Helper Component
+
+The Helper represents a specialized, lightweight graphical user interface executable that operates independently from the main FireBox application. Its singular responsibility involves presenting the authorization dialog to users and returning an appropriate exit code to communicate the user's decision. The implementation of this component varies across platforms to ensure native integration with each operating system's user interface paradigms. On Windows systems, the Helper is implemented as a .NET or C# executable that displays a TaskDialog; macOS implementations utilize Swift to present an NSAlert or Window; whilst Linux variants employ either GTK or Qt frameworks, or alternatively present notification bubbles, depending on the desktop environment.
+
+## Persistence Mechanisms
+
+To maintain continuity across sessions and avoid repeatedly prompting users for authorization of previously approved applications, the service implements a persistence mechanism for the allowlist. This allowlist is stored on disk, typically as a JSON-formatted file located within the system's configuration directory. Each entry within this database employs the executable path as its primary key, with examples including paths such as `/usr/bin/curl` on Unix-like systems or `C:\Program Files\VSCode\code.exe` on Windows platforms. Associated with each key is metadata comprising the timestamp of first observation, the timestamp of most recent usage, and a human-readable display name for the application.
+
+## Revocation Procedures
+
+The system provides mechanisms for users to revoke previously granted authorizations through the FireBox Frontend Application, which serves as the management interface. This interface enables users to view both active connections and the complete allowlist of authorized applications. When a user elects to revoke an application's access privileges through the frontend, the corresponding entry is removed from the persistent allowlist database. Consequently, should that application subsequently attempt to establish a connection, the system treats it as an unknown client, thereby triggering the user approval workflow once again. This revocation capability ensures that users maintain ongoing control over which applications may access FireBox services.

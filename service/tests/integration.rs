@@ -1,9 +1,7 @@
 //! Integration Tests for FireBox Service
 
 use firebox_service::middleware::metrics::{MetricsCollector, RequestTimer};
-use firebox_service::middleware::route::{
-    RouteTarget, init as route_init, resolve_alias, set_route_rules,
-};
+use firebox_service::middleware::route::{RouteTarget, resolve_alias, set_route_rules};
 use firebox_service::providers::config::ProviderConfig;
 use firebox_service::providers::{
     ChatMessage, Choice, CompletionRequest, CompletionResponse, EmbeddingRequest, ProviderError,
@@ -56,10 +54,8 @@ fn test_provider_config_json_roundtrip() {
 // ============================================================================
 
 /// Test complete routing workflow
-#[test]
-fn test_complete_routing_workflow() {
-    let _ = route_init();
-
+#[tokio::test]
+async fn test_complete_routing_workflow() {
     // Set up failover chain
     let targets = vec![
         RouteTarget {
@@ -76,16 +72,16 @@ fn test_complete_routing_workflow() {
         },
     ];
 
-    set_route_rules("production-model", targets).unwrap();
+    set_route_rules("production-model", targets).await.unwrap();
 
     // Resolve alias
-    let (provider, model) = resolve_alias("production-model").unwrap();
+    let (provider, model) = resolve_alias("production-model").await.unwrap();
     assert_eq!(provider, "openai");
     assert_eq!(model, "gpt-4");
 
     // Test failover
     use firebox_service::middleware::route::get_next_target;
-    let next = get_next_target("production-model", "openai").unwrap();
+    let next = get_next_target("production-model", "openai").await.unwrap();
     assert_eq!(next.unwrap().0, "anthropic");
 }
 
@@ -118,39 +114,45 @@ fn test_metrics_collection_workflow() {
 }
 
 /// Test provider-specific metrics
-#[test]
-fn test_provider_specific_metrics() {
+#[tokio::test]
+async fn test_provider_specific_metrics() {
     let collector = MetricsCollector::new();
 
     // Record metrics for different providers
-    collector.record_success_with_breakdown(
-        "openai",
-        Some("gpt-4"),
-        100,
-        50,
-        Duration::from_millis(200),
-        0.05,
-    );
+    collector
+        .record_success_with_breakdown(
+            "openai",
+            Some("gpt-4"),
+            100,
+            50,
+            Duration::from_millis(200),
+            0.05,
+        )
+        .await;
 
-    collector.record_success_with_breakdown(
-        "anthropic",
-        Some("claude-3"),
-        150,
-        75,
-        Duration::from_millis(250),
-        0.075,
-    );
+    collector
+        .record_success_with_breakdown(
+            "anthropic",
+            Some("claude-3"),
+            150,
+            75,
+            Duration::from_millis(250),
+            0.075,
+        )
+        .await;
 
-    collector.record_success_with_breakdown(
-        "dashscope",
-        Some("qwen-max"),
-        200,
-        100,
-        Duration::from_millis(300),
-        0.02,
-    );
+    collector
+        .record_success_with_breakdown(
+            "dashscope",
+            Some("qwen-max"),
+            200,
+            100,
+            Duration::from_millis(300),
+            0.02,
+        )
+        .await;
 
-    let provider_metrics = collector.get_provider_metrics();
+    let provider_metrics = collector.get_provider_metrics().await;
     assert_eq!(provider_metrics.len(), 3);
 
     // Verify each provider has correct data
@@ -465,10 +467,8 @@ fn test_multi_provider_setup() {
 }
 
 /// Test provider failover configuration
-#[test]
-fn test_failover_configuration() {
-    let _ = route_init();
-
+#[tokio::test]
+async fn test_failover_configuration() {
     // Set up a complete failover chain
     let targets = vec![
         RouteTarget {
@@ -489,19 +489,23 @@ fn test_failover_configuration() {
         },
     ];
 
-    set_route_rules("critical-app", targets.clone()).unwrap();
+    set_route_rules("critical-app", targets.clone())
+        .await
+        .unwrap();
 
     // Verify complete chain
     let mut current_provider = "openai";
     for expected_next in ["anthropic", "dashscope", "llamacpp"] {
-        let next = get_next_target("critical-app", current_provider).unwrap();
+        let next = get_next_target("critical-app", current_provider)
+            .await
+            .unwrap();
         assert!(next.is_some());
         assert_eq!(next.unwrap().0, expected_next);
         current_provider = expected_next;
     }
 
     // Last provider should have no next
-    let next = get_next_target("critical-app", "llamacpp").unwrap();
+    let next = get_next_target("critical-app", "llamacpp").await.unwrap();
     assert!(next.is_none());
 }
 

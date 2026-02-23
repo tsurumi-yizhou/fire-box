@@ -20,9 +20,6 @@ use anyhow::Result;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-/// Service state
-static RUNNING: AtomicBool = AtomicBool::new(false);
-
 /// Shutdown flag for graceful termination
 struct Shutdown {
     flag: Arc<AtomicBool>,
@@ -69,15 +66,24 @@ fn init_logging() {
     #[cfg(target_os = "linux")]
     {
         // Try systemd journal first, fall back to tracing
-        if systemd_journal_logger::JournalLog::new()
-            .unwrap()
-            .install()
-            .is_err()
-        {
-            tracing_subscriber::registry()
-                .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
-                .with(tracing_subscriber::fmt::layer())
-                .init();
+        match systemd_journal_logger::JournalLog::new().unwrap().install() {
+            Ok(_) => {
+                log::info!("Using systemd journal for logging");
+            }
+            Err(e) => {
+                // Fall back to tracing subscriber
+                tracing_subscriber::registry()
+                    .with(
+                        EnvFilter::try_from_default_env()
+                            .unwrap_or_else(|_| EnvFilter::new("info")),
+                    )
+                    .with(tracing_subscriber::fmt::layer())
+                    .init();
+                tracing::warn!(
+                    "Failed to initialize systemd journal logger: {}. Falling back to stderr logging.",
+                    e
+                );
+            }
         }
     }
 
@@ -112,8 +118,6 @@ async fn run_service(shutdown: ShutdownHandle) -> Result<()> {
 #[cfg(target_os = "windows")]
 mod windows_service {
     use super::*;
-    use std::ffi::OsString;
-    use std::time::Duration;
     use ::windows_service::{
         define_windows_service,
         service::{
@@ -123,6 +127,8 @@ mod windows_service {
         service_control_handler::{self, ServiceControlHandlerResult},
         service_dispatcher,
     };
+    use std::ffi::OsString;
+    use std::time::Duration;
 
     const SERVICE_NAME: &str = "FireBoxService";
     const SERVICE_TYPE: ServiceType = ServiceType::OWN_PROCESS;
@@ -218,9 +224,6 @@ async fn main() -> Result<()> {
     let shutdown = Shutdown::new();
     let shutdown_handle = shutdown.handle();
 
-    // Set global running flag
-    RUNNING.store(true, Ordering::Relaxed);
-
     // Set up signal handlers
     let shutdown_clone = shutdown.handle();
     tokio::spawn(async move {
@@ -252,7 +255,6 @@ async fn main() -> Result<()> {
     // Run the service
     run_service(shutdown_handle).await?;
 
-    RUNNING.store(false, Ordering::Relaxed);
     tracing::info!("FireBox Service stopped");
 
     Ok(())

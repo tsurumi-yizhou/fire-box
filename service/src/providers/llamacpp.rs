@@ -5,7 +5,7 @@ use std::time::Duration;
 use anyhow::{Result, bail};
 use futures_util::stream;
 
-use crate::middleware::keyring as secure_keyring;
+use crate::middleware::storage;
 use crate::providers::{
     BoxStream, ChatMessage, Choice, CompletionRequest, CompletionResponse, EmbeddingRequest,
     EmbeddingResponse, Provider, StreamEvent, Usage,
@@ -16,6 +16,8 @@ use crate::providers::{
 pub struct LlamaCppConfig {
     /// Path to the GGUF model file.
     pub model_path: PathBuf,
+    /// Path to the llama-server binary.
+    pub server_path: Option<PathBuf>,
     /// Context window size in tokens.
     pub context_size: u32,
     /// Number of layers to offload to GPU (if available).
@@ -52,6 +54,7 @@ impl LlamaCppProvider {
         Self {
             config: LlamaCppConfig {
                 model_path: path.into(),
+                server_path: None,
                 context_size: 4096,
                 gpu_layers: None,
                 threads: None,
@@ -69,6 +72,7 @@ impl LlamaCppProvider {
         Self {
             config: LlamaCppConfig {
                 model_path: PathBuf::new(),
+                server_path: None,
                 context_size: 4096,
                 gpu_layers: None,
                 threads: None,
@@ -114,7 +118,13 @@ impl LlamaCppProvider {
             bail!("Model file not found: {:?}", model_path);
         }
 
-        let mut cmd = Command::new("llama-server");
+        let binary = self
+            .config
+            .server_path
+            .as_deref()
+            .unwrap_or_else(|| Path::new("llama-server"));
+
+        let mut cmd = Command::new(binary);
 
         // Basic arguments
         cmd.arg("-m").arg(model_path);
@@ -142,13 +152,27 @@ impl LlamaCppProvider {
         }
 
         // Run in background, redirecting output to log
-        // TODO: Redirect stdout/stderr to a proper log file
-        cmd.stdout(Stdio::null());
-        cmd.stderr(Stdio::null());
+        let log_dir = dirs::data_local_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("fire-box")
+            .join("logs");
+        std::fs::create_dir_all(&log_dir)?;
+        let log_path = log_dir.join("llama-server.log");
+
+        let stdout_file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+            .map_err(|e| anyhow::anyhow!("Failed to open log file: {}", e))?;
+        let stderr_file = stdout_file.try_clone()?;
+
+        cmd.stdout(Stdio::from(stdout_file));
+        cmd.stderr(Stdio::from(stderr_file));
 
         let child = cmd.spawn().map_err(|e| {
             anyhow::anyhow!(
-                "Failed to spawn llama-server. Ensure it is in your PATH. Error: {}",
+                "Failed to spawn {:?}. Ensure it is in your PATH or configured in 'server_path'. Error: {}",
+                binary,
                 e
             )
         })?;
@@ -178,10 +202,10 @@ impl LlamaCppProvider {
     }
 
     // -----------------------------------------------------------------------
-    // Keyring helpers
+    // Secure storage helpers
     // -----------------------------------------------------------------------
 
-    /// Persist the model path in the OS keyring under `fire-box-llamacpp`.
+    /// Persist the model path in platform-specific secure storage under `fire-box-llamacpp`.
     ///
     /// Only the model path is stored; runtime parameters (context size, GPU
     /// layers, threads) are not persisted here — use
@@ -193,16 +217,16 @@ impl LlamaCppProvider {
             .model_path
             .to_str()
             .ok_or_else(|| anyhow::anyhow!("model path is not valid UTF-8"))?;
-        secure_keyring::set_password("fire-box-llamacpp", "model-path", path_str)
+        storage::set_secret_with_biometric("fire-box-llamacpp", "model-path", path_str)
             .map_err(|e| anyhow::anyhow!("failed to save model path: {e}"))
     }
 
-    /// Load the model path from the OS keyring and construct a provider
+    /// Load the model path from platform-specific secure storage and construct a provider
     /// with default configuration parameters.
     pub fn from_keyring() -> Result<Self> {
-        let path_str = secure_keyring::get_password("fire-box-llamacpp", "model-path")
+        let path_str = storage::get_secret("fire-box-llamacpp", "model-path")
             .map_err(|e| anyhow::anyhow!("failed to load model path: {e}"))?;
-        Ok(Self::from_model_path(path_str))
+        Ok(Self::from_model_path(path_str.as_str()))
     }
 
     // -----------------------------------------------------------------------
@@ -413,9 +437,51 @@ impl Provider for LlamaCppProvider {
     async fn embed(
         &self,
         _session_id: &str,
-        _request: &EmbeddingRequest,
+        request: &EmbeddingRequest,
     ) -> anyhow::Result<EmbeddingResponse> {
-        bail!("llama.cpp provider: embeddings not yet implemented")
+        let url = format!("{}/embedding", self.server_url());
+
+        let body = serde_json::json!({
+            "content": request.input.join("\n"),
+        });
+
+        let response = self
+            .client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            bail!("llama.cpp API error: HTTP {} - {}", status, error_text);
+        }
+
+        let json: serde_json::Value = response.json().await?;
+
+        let embedding_vec = json
+            .get("embedding")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| anyhow::anyhow!("Invalid response: missing embedding vector"))?;
+
+        let embedding: Vec<f64> = embedding_vec.iter().filter_map(|v| v.as_f64()).collect();
+
+        let usage = json.get("usage").map(|u| crate::providers::Usage {
+            prompt_tokens: u.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+            completion_tokens: 0,
+            total_tokens: u.get("total_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+        });
+
+        Ok(EmbeddingResponse {
+            model: request.model.clone(),
+            data: vec![crate::providers::Embedding {
+                index: 0,
+                embedding,
+            }],
+            usage,
+        })
     }
 
     async fn list_models(&self) -> anyhow::Result<Vec<String>> {
@@ -477,6 +543,7 @@ mod tests {
     fn create_with_config() {
         let config = LlamaCppConfig {
             model_path: PathBuf::from("/models/mistral.gguf"),
+            server_path: None,
             context_size: 8192,
             gpu_layers: Some(32),
             threads: Some(8),

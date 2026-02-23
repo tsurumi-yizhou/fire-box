@@ -191,6 +191,7 @@ fn dashscope_config_clone() {
 fn llamacpp_config_basic() {
     let config = LlamaCppProviderConfig {
         model_path: PathBuf::from("/models/llama.gguf"),
+        server_path: None,
         context_size: 4096,
         gpu_layers: None,
         threads: None,
@@ -204,6 +205,7 @@ fn llamacpp_config_basic() {
 fn llamacpp_config_with_gpu_layers() {
     let config = LlamaCppProviderConfig {
         model_path: PathBuf::from("/models/mistral.gguf"),
+        server_path: None,
         context_size: 8192,
         gpu_layers: Some(32),
         threads: None,
@@ -216,6 +218,7 @@ fn llamacpp_config_with_gpu_layers() {
 fn llamacpp_config_with_threads() {
     let config = LlamaCppProviderConfig {
         model_path: PathBuf::from("/models/qwen.gguf"),
+        server_path: None,
         context_size: 4096,
         gpu_layers: None,
         threads: Some(8),
@@ -228,6 +231,7 @@ fn llamacpp_config_with_threads() {
 fn llamacpp_config_clone() {
     let config = LlamaCppProviderConfig {
         model_path: PathBuf::from("/models/clone.gguf"),
+        server_path: None,
         context_size: 4096,
         gpu_layers: None,
         threads: None,
@@ -459,39 +463,39 @@ fn provider_config_base_url_llamacpp() {
 }
 
 // display_name tests
-#[test]
-fn provider_config_display_name_openai() {
-    let name = ProviderConfig::display_name("openai", "openai");
+#[tokio::test]
+async fn provider_config_display_name_openai() {
+    let name = ProviderConfig::display_name("openai", "openai").await;
     assert_eq!(name, "OpenAI");
 }
 
-#[test]
-fn provider_config_display_name_anthropic() {
-    let name = ProviderConfig::display_name("anthropic", "anthropic");
+#[tokio::test]
+async fn provider_config_display_name_anthropic() {
+    let name = ProviderConfig::display_name("anthropic", "anthropic").await;
     assert_eq!(name, "Anthropic");
 }
 
-#[test]
-fn provider_config_display_name_copilot() {
-    let name = ProviderConfig::display_name("copilot", "copilot");
+#[tokio::test]
+async fn provider_config_display_name_copilot() {
+    let name = ProviderConfig::display_name("copilot", "copilot").await;
     assert_eq!(name, "GitHub Copilot");
 }
 
-#[test]
-fn provider_config_display_name_dashscope() {
-    let name = ProviderConfig::display_name("dashscope", "dashscope");
+#[tokio::test]
+async fn provider_config_display_name_dashscope() {
+    let name = ProviderConfig::display_name("dashscope", "dashscope").await;
     assert_eq!(name, "DashScope (Qwen)");
 }
 
-#[test]
-fn provider_config_display_name_llamacpp() {
-    let name = ProviderConfig::display_name("llamacpp", "llamacpp");
+#[tokio::test]
+async fn provider_config_display_name_llamacpp() {
+    let name = ProviderConfig::display_name("llamacpp", "llamacpp").await;
     assert_eq!(name, "llama.cpp");
 }
 
-#[test]
-fn provider_config_display_name_custom() {
-    let name = ProviderConfig::display_name("my-custom-profile", "openai");
+#[tokio::test]
+async fn provider_config_display_name_custom() {
+    let name = ProviderConfig::display_name("my-custom-profile", "openai").await;
     assert!(name.contains("my-custom-profile"));
 }
 
@@ -507,7 +511,7 @@ fn provider_config_to_json_openai() {
 
 #[test]
 fn provider_config_from_json_openai() {
-    let json = r#"{"OpenAi":{"api_key":"sk-test","base_url":null}}"#;
+    let json = r#"{"provider": "open_ai", "api_key": "sk-test", "base_url": null}"#;
     let config = ProviderConfig::from_json(json).unwrap();
 
     match config {

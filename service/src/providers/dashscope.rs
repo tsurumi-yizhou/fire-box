@@ -8,7 +8,7 @@
 //! via the Qwen device flow at `chat.qwen.ai` and passed as
 //! `Authorization: Bearer <access_token>` with `X-DashScope-AuthType: oauth`.
 //!
-//! # Keyring
+//! # Secure Storage
 //! Use [`DashScopeProvider::save_oauth_to_keyring`] to persist
 //! [`OAuthCredentials`] and [`DashScopeProvider::from_keyring_oauth`] to
 //! restore them.
@@ -17,7 +17,7 @@ use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
-use crate::middleware::keyring as secure_keyring;
+use crate::middleware::storage;
 use crate::providers::{
     BoxStream, CompletionRequest, CompletionResponse, EmbeddingRequest, EmbeddingResponse,
     Provider, StreamEvent, config::DashScopeConfig,
@@ -51,6 +51,9 @@ const QWEN_DEVICE_GRANT: &str = "urn:ietf:params:oauth:grant-type:device_code";
 
 const KEYRING_SERVICE: &str = "fire-box-dashscope";
 const KEYRING_USER_OAUTH: &str = "oauth-credentials";
+
+/// Buffer time before token expiry to trigger refresh (in milliseconds)
+const TOKEN_EXPIRY_BUFFER_MS: i64 = 60_000;
 
 // ---------------------------------------------------------------------------
 // HTTP client
@@ -92,7 +95,7 @@ impl OAuthCredentials {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as i64;
-        expiry > now_ms + 60_000
+        expiry > now_ms + TOKEN_EXPIRY_BUFFER_MS
     }
 }
 
@@ -532,8 +535,12 @@ impl DashScopeProvider {
             .unwrap_or(NATIVE_BASE_URL)
             .to_string();
         let creds = OAuthCredentials {
-            access_token: cfg.access_token.clone().unwrap_or_default(),
-            refresh_token: cfg.refresh_token.clone(),
+            access_token: cfg
+                .access_token
+                .as_ref()
+                .map(|t| t.as_str().to_string())
+                .unwrap_or_default(),
+            refresh_token: cfg.refresh_token.as_ref().map(|t| t.as_str().to_string()),
             resource_url: cfg.resource_url.clone(),
             expiry_date: cfg.expiry_date,
         };
@@ -570,25 +577,25 @@ impl DashScopeProvider {
     }
 
     // -----------------------------------------------------------------------
-    // Keyring helpers
+    // Secure storage helpers
     // -----------------------------------------------------------------------
 
-    /// Persist OAuth credentials in the OS keyring (JSON-encoded).
+    /// Persist OAuth credentials in platform-specific secure storage with biometric protection (JSON-encoded).
     pub fn save_oauth_to_keyring(creds: &OAuthCredentials) -> Result<()> {
         let json = serde_json::to_string(creds)?;
-        secure_keyring::set_password(KEYRING_SERVICE, KEYRING_USER_OAUTH, &json)
+        storage::set_secret_with_biometric(KEYRING_SERVICE, KEYRING_USER_OAUTH, &json)
             .map_err(|e| anyhow::anyhow!("failed to save DashScope OAuth credentials: {e}"))
     }
 
-    /// Load an OAuth-credential provider from the OS keyring.
+    /// Load an OAuth-credential provider from platform-specific secure storage.
     pub fn from_keyring_oauth() -> Result<Self> {
-        let json = secure_keyring::get_password(KEYRING_SERVICE, KEYRING_USER_OAUTH)
+        let json = storage::get_secret(KEYRING_SERVICE, KEYRING_USER_OAUTH)
             .map_err(|e| anyhow::anyhow!("failed to load DashScope OAuth credentials: {e}"))?;
         let creds: OAuthCredentials = serde_json::from_str(&json)?;
         Ok(Self::with_oauth(creds))
     }
 
-    /// Persist the current credentials in the OS keyring.
+    /// Persist the current credentials in platform-specific secure storage.
     pub fn save_to_keyring(&self) -> Result<()> {
         Self::save_oauth_to_keyring(&self.credentials)
     }
@@ -721,9 +728,131 @@ impl Provider for DashScopeProvider {
     async fn complete_stream(
         &self,
         _session_id: &str,
-        _request: &CompletionRequest,
+        request: &CompletionRequest,
     ) -> Result<BoxStream<Result<StreamEvent>>> {
-        bail!("DashScope provider: streaming not yet implemented")
+        use futures_util::stream;
+
+        let url = self.endpoint();
+        let messages = Self::to_native_messages(request);
+        let body = NativeRequest {
+            model: &request.model,
+            input: NativeInput {
+                messages: &messages,
+            },
+            parameters: Some(NativeParameters {
+                max_tokens: request.max_tokens,
+                temperature: request.temperature,
+                result_format: "message",
+            }),
+        };
+
+        let response = self
+            .client
+            .post(&url)
+            .header(
+                "Authorization",
+                format!("Bearer {}", self.credentials.access_token),
+            )
+            .header("X-DashScope-AuthType", "oauth")
+            .header("Content-Type", "application/json")
+            .header("X-DashScope-SSE", "enable")
+            .json(&body)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            bail!(
+                "DashScope API error: HTTP {} – {}",
+                response.status(),
+                response.text().await.unwrap_or_default()
+            );
+        }
+
+        let event_stream = response.bytes_stream();
+
+        let stream = stream::unfold(
+            (event_stream, String::new()),
+            |(mut stream, mut buffer)| async move {
+                use futures_util::stream::StreamExt;
+
+                while let Some(chunk_result) = stream.next().await {
+                    match chunk_result {
+                        Ok(chunk) => {
+                            let text = String::from_utf8_lossy(&chunk);
+                            buffer.push_str(&text);
+
+                            while let Some(newline_pos) = buffer.find('\n') {
+                                let line = buffer[..newline_pos].trim().to_string();
+                                buffer.drain(..=newline_pos);
+
+                                if line.is_empty() || !line.starts_with("data:") {
+                                    continue;
+                                }
+
+                                let data = line[5..].trim();
+                                if data.is_empty() {
+                                    continue;
+                                }
+
+                                match serde_json::from_str::<serde_json::Value>(data) {
+                                    Ok(json) => {
+                                        if let Some(output) = json.get("output")
+                                            && let Some(choices) =
+                                                output.get("choices").and_then(|v| v.as_array())
+                                            && let Some(choice) = choices.first()
+                                        {
+                                            if let Some(message) = choice.get("message")
+                                                && let Some(content) =
+                                                    message.get("content").and_then(|v| v.as_str())
+                                                && !content.is_empty()
+                                            {
+                                                return Some((
+                                                    Ok(StreamEvent::Delta {
+                                                        content: content.to_string(),
+                                                    }),
+                                                    (stream, buffer),
+                                                ));
+                                            }
+                                            if let Some(finish_reason) =
+                                                choice.get("finish_reason").and_then(|v| v.as_str())
+                                                && finish_reason == "stop"
+                                            {
+                                                return Some((
+                                                    Ok(StreamEvent::Done),
+                                                    (stream, buffer),
+                                                ));
+                                            }
+                                        }
+                                        if let Some(usage) = json.get("usage")
+                                            && (usage.get("input_tokens").is_some()
+                                                || usage.get("output_tokens").is_some())
+                                        {
+                                            return Some((Ok(StreamEvent::Done), (stream, buffer)));
+                                        }
+                                    }
+                                    Err(e) => {
+                                        return Some((
+                                            Err(anyhow::anyhow!("Failed to parse SSE: {}", e)),
+                                            (stream, buffer),
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            return Some((
+                                Err(anyhow::anyhow!("Stream error: {}", e)),
+                                (stream, buffer),
+                            ));
+                        }
+                    }
+                }
+
+                Some((Ok(StreamEvent::Done), (stream, buffer)))
+            },
+        );
+
+        Ok(Box::pin(stream))
     }
 
     async fn embed(

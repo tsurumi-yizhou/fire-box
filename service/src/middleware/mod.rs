@@ -2,19 +2,19 @@
 //!
 //! This layer sits between the IPC interface and the provider implementations,
 //! handling:
-//! - **keyring**: OS keychain abstraction for secrets
-//! - **store**: Encrypted local storage for configurations
+//! - **storage**: Secure credential storage in native platform keyrings
+//! - **config**: Encrypted configuration file management
 //! - **route**: Model routing and failover logic
 //! - **metrics**: Request/response metrics collection
 //! - **metadata**: AI provider and model metadata management
 
-pub mod keyring;
+pub mod config;
 pub mod metadata;
 pub mod metrics;
 pub mod route;
-pub mod store;
+pub mod storage;
 
 // Re-export commonly used types
-pub use keyring::{get_password, set_password};
+pub use config::{ConfigData, load_config, update_config};
 pub use metadata::{MetadataManager, Model, Vendor};
-pub use store::{load, update};
+pub use storage::{delete_secret, get_secret, set_secret, set_secret_with_biometric};
