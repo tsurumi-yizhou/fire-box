@@ -68,6 +68,84 @@ struct RouteRule: Codable, Identifiable {
     var id: String { alias }
 }
 
+// MARK: - XPC Transport
+
+private let xpcServiceName = "com.firebox.service"
+
+/// Send a request to the Rust XPC service and return the "body" reply dict.
+private func xpcSend(_ request: [String: Any]) async -> [String: Any]? {
+    await withCheckedContinuation { continuation in
+        let conn = xpc_connection_create_mach_service(xpcServiceName, nil, 0)
+        xpc_connection_set_event_handler(conn) { _ in }
+        xpc_connection_resume(conn)
+
+        let msg = xpc_dictionary_create(nil, nil, 0)
+        for (key, value) in request {
+            switch value {
+            case let s as String:
+                xpc_dictionary_set_string(msg, key, s)
+            case let i as Int64:
+                xpc_dictionary_set_int64(msg, key, i)
+            case let b as Bool:
+                xpc_dictionary_set_bool(msg, key, b)
+            case let arr as [[String: String]]:
+                let xarr = xpc_array_create(nil, 0)
+                for item in arr {
+                    let xitem = xpc_dictionary_create(nil, nil, 0)
+                    for (k, v) in item { xpc_dictionary_set_string(xitem, k, v) }
+                    xpc_array_append_value(xarr, xitem)
+                    xpc_release(xitem)
+                }
+                xpc_dictionary_set_value(msg, key, xarr)
+                xpc_release(xarr)
+            default:
+                break
+            }
+        }
+
+        xpc_connection_send_message_with_reply(conn, msg, nil) { reply in
+            xpc_connection_cancel(conn)
+            guard xpc_get_type(reply) == XPC_TYPE_DICTIONARY,
+                  let body = xpc_dictionary_get_value(reply, "body"),
+                  xpc_get_type(body) == XPC_TYPE_DICTIONARY
+            else {
+                continuation.resume(returning: nil)
+                return
+            }
+            continuation.resume(returning: xpcDictToSwift(body))
+        }
+        xpc_release(msg)
+    }
+}
+
+private func xpcDictToSwift(_ obj: xpc_object_t) -> [String: Any] {
+    var result: [String: Any] = [:]
+    xpc_dictionary_apply(obj) { key, value in
+        let k = String(cString: key)
+        let t = xpc_get_type(value)
+        if t == XPC_TYPE_STRING {
+            if let ptr = xpc_string_get_string_ptr(value) { result[k] = String(cString: ptr) }
+        } else if t == XPC_TYPE_INT64 {
+            result[k] = xpc_int64_get_value(value)
+        } else if t == XPC_TYPE_BOOL {
+            result[k] = xpc_bool_get_value(value)
+        } else if t == XPC_TYPE_ARRAY {
+            var arr: [[String: Any]] = []
+            xpc_array_apply(value) { _, item in
+                if xpc_get_type(item) == XPC_TYPE_DICTIONARY {
+                    arr.append(xpcDictToSwift(item))
+                }
+                return true
+            }
+            result[k] = arr
+        } else if t == XPC_TYPE_DICTIONARY {
+            result[k] = xpcDictToSwift(value)
+        }
+        return true
+    }
+    return result
+}
+
 // MARK: - Service Client
 
 actor ServiceClient {
@@ -75,115 +153,128 @@ actor ServiceClient {
 
     private init() {}
 
-    // TODO: Implement actual XPC connection to the backend service
-    // For now, return mock data
-
     func checkServiceStatus() async -> Bool {
-        // Mock implementation
-        return true
+        let reply = await xpcSend(["cmd": "ping"])
+        return reply?["success"] as? Bool ?? false
     }
 
     func getMetricsSnapshot() async -> MetricsSnapshot? {
-        // Mock implementation
+        guard let r = await xpcSend(["cmd": "get_metrics"]),
+              r["success"] as? Bool == true else { return nil }
+
+        let costMicrocents = r["cost_total_microcents"] as? Int64 ?? 0
         return MetricsSnapshot(
-            timestampMs: Int64(Date().timeIntervalSince1970 * 1000),
-            totalRequests: 1234,
-            totalTokensInput: 567890,
-            totalTokensOutput: 234567,
-            totalCost: 12.34,
-            activeConnections: 3
+            timestampMs: r["window_end_ms"] as? Int64 ?? 0,
+            totalRequests: r["requests_total"] as? Int64 ?? 0,
+            totalTokensInput: r["prompt_tokens_total"] as? Int64 ?? 0,
+            totalTokensOutput: r["completion_tokens_total"] as? Int64 ?? 0,
+            totalCost: Double(costMicrocents) / 1_000_000.0,
+            activeConnections: 0
         )
     }
 
     func listConnections() async -> [Connection] {
-        // Mock implementation
-        return [
-            Connection(
-                connectionId: "conn-1",
-                programName: "VSCode",
-                programPath: "/Applications/Visual Studio Code.app",
-                connectedAtMs: Int64(Date().timeIntervalSince1970 * 1000) - 3600000,
-                lastActivityMs: Int64(Date().timeIntervalSince1970 * 1000),
-                requestCount: 42
+        guard let r = await xpcSend(["cmd": "list_connections"]),
+              r["success"] as? Bool == true,
+              let conns = r["connections"] as? [[String: Any]] else { return [] }
+
+        return conns.compactMap { d in
+            guard let cid = d["connection_id"] as? String,
+                  let name = d["client_name"] as? String else { return nil }
+            return Connection(
+                connectionId: cid,
+                programName: name,
+                programPath: "",
+                connectedAtMs: 0,
+                lastActivityMs: 0,
+                requestCount: d["requests_count"] as? Int64 ?? 0
             )
-        ]
+        }
     }
 
     func listProviders() async -> [Provider] {
-        // Mock implementation
-        return [
-            Provider(
-                providerId: "openai",
-                name: "OpenAI",
-                type: .apiKey,
-                baseUrl: "https://api.openai.com/v1",
-                localPath: nil
-            ),
-            Provider(
-                providerId: "anthropic",
-                name: "Anthropic",
-                type: .apiKey,
-                baseUrl: "https://api.anthropic.com",
+        guard let r = await xpcSend(["cmd": "list_providers"]),
+              r["success"] as? Bool == true,
+              let provs = r["providers"] as? [[String: Any]] else { return [] }
+
+        return provs.compactMap { d in
+            guard let pid = d["provider_id"] as? String,
+                  let name = d["name"] as? String else { return nil }
+            let typeRaw = Int(d["type"] as? Int64 ?? 1)
+            let ptype = ProviderType(rawValue: typeRaw) ?? .apiKey
+            let baseUrl = d["base_url"] as? String
+            return Provider(
+                providerId: pid,
+                name: name,
+                type: ptype,
+                baseUrl: baseUrl?.isEmpty == false ? baseUrl : nil,
                 localPath: nil
             )
-        ]
+        }
     }
 
     func listModels() async -> [Model] {
-        // Mock implementation
-        return [
-            Model(
-                modelId: "gpt-4",
-                providerId: "openai",
-                contextWindow: 8192,
-                enabled: true,
-                capabilityChat: true,
-                capabilityTools: true,
-                capabilityVision: false,
-                capabilityEmbeddings: false,
-                capabilityStreaming: true,
-                costInputPerMillionTokens: 30.0,
-                costOutputPerMillionTokens: 60.0,
-                costCacheReadPerMillionTokens: nil,
-                costCacheWritePerMillionTokens: nil
-            )
-        ]
+        // Models are derived from providers; no dedicated XPC command yet.
+        return []
     }
 
     func listRouteRules() async -> [RouteRule] {
-        // Mock implementation
-        return [
-            RouteRule(
-                alias: "default",
-                targets: [
-                    RouteTarget(providerId: "openai", modelId: "gpt-4")
-                ]
-            )
-        ]
+        guard let r = await xpcSend(["cmd": "list_route_rules"]),
+              r["success"] as? Bool == true,
+              let rules = r["rules"] as? [[String: Any]] else { return [] }
+
+        return rules.compactMap { d in
+            guard let vmid = d["virtual_model_id"] as? String else { return nil }
+            let targets = (d["targets"] as? [[String: Any]] ?? []).compactMap { t -> RouteTarget? in
+                guard let pid = t["provider_id"] as? String,
+                      let mid = t["model_id"] as? String else { return nil }
+                return RouteTarget(providerId: pid, modelId: mid)
+            }
+            return RouteRule(alias: vmid, targets: targets)
+        }
     }
 
     func addProvider(_ provider: Provider) async -> Bool {
-        // TODO: Implement XPC call
-        return true
+        var req: [String: Any] = [
+            "cmd": "add_api_key_provider",
+            "name": provider.name,
+            "provider_type": providerTypeSlug(provider.type),
+        ]
+        if let url = provider.baseUrl { req["base_url"] = url }
+        let r = await xpcSend(req)
+        return r?["success"] as? Bool ?? false
     }
 
     func removeProvider(providerId: String) async -> Bool {
-        // TODO: Implement XPC call
-        return true
+        let r = await xpcSend(["cmd": "delete_provider", "provider_id": providerId])
+        return r?["success"] as? Bool ?? false
     }
 
     func addRouteRule(_ rule: RouteRule) async -> Bool {
-        // TODO: Implement XPC call
-        return true
+        let targets = rule.targets.map { ["provider_id": $0.providerId, "model_id": $0.modelId] }
+        let r = await xpcSend([
+            "cmd": "set_route_rule",
+            "virtual_model_id": rule.alias,
+            "display_name": rule.alias,
+            "targets": targets,
+        ])
+        return r?["success"] as? Bool ?? false
     }
 
     func removeRouteRule(alias: String) async -> Bool {
-        // TODO: Implement XPC call
-        return true
+        let r = await xpcSend(["cmd": "delete_route_rule", "virtual_model_id": alias])
+        return r?["success"] as? Bool ?? false
     }
 
     func updateRouteRule(_ rule: RouteRule) async -> Bool {
-        // TODO: Implement XPC call
-        return true
+        return await addRouteRule(rule)
+    }
+
+    private func providerTypeSlug(_ type: ProviderType) -> String {
+        switch type {
+        case .apiKey: return "openai"
+        case .oauth:  return "copilot"
+        case .local:  return "llamacpp"
+        }
     }
 }

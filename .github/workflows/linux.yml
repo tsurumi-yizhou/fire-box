@@ -17,14 +17,15 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            meson \
+            cmake \
             ninja-build \
+            meson \
+            xdg-utils \
             libgtkmm-4.0-dev \
             libadwaita-1-dev \
             libsdbus-c++-dev \
             libayatana-appindicator3-dev \
-            blueprint-compiler \
-            gettext
+            blueprint-compiler
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -40,11 +41,19 @@ jobs:
             target/
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Build Rust service
-        run: cargo build --workspace --release
+      - name: Configure with CMake
+        run: cmake -B build
 
-      - name: Build Linux application
+      - name: Build with CMake
+        run: cmake --build build --config Release
+
+      - name: Create package
         run: |
-          cd linux
-          meson setup build
-          meson compile -C build
+          cd build
+          cpack -C Release
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: FireBox-Linux
+          path: build/firebox_*.deb

@@ -13,5 +13,6 @@
 //! Note: This is a background service with no CLI interface.
 //! All interaction is done through platform-specific IPC.
 
+pub mod interfaces;
 pub mod middleware;
 pub mod providers;

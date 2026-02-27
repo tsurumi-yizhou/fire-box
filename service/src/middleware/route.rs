@@ -5,11 +5,12 @@
 
 use std::collections::HashMap;
 
-use anyhow::Result;
+use anyhow::{Result, Context};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{OnceCell, RwLock};
 
 use crate::middleware::config;
+use crate::middleware::metadata::MetadataManager;
 
 /// A route target: provider + model pair.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -18,10 +19,57 @@ pub struct RouteTarget {
     pub model_id: String,
 }
 
-/// A route rule: maps an alias to ordered targets.
+/// Required capabilities for a virtual model route contract.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RouteCapabilities {
+    #[serde(default = "default_true")]
+    pub chat: bool,
+    #[serde(default = "default_true")]
+    pub streaming: bool,
+    #[serde(default)]
+    pub embeddings: bool,
+    #[serde(default)]
+    pub vision: bool,
+    #[serde(default)]
+    pub tool_calling: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for RouteCapabilities {
+    fn default() -> Self {
+        Self {
+            chat: true,
+            streaming: true,
+            embeddings: false,
+            vision: false,
+            tool_calling: false,
+        }
+    }
+}
+
+/// Additional metadata and constraints for a virtual model route.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RouteMetadata {
+    pub context_window: Option<u32>,
+    pub pricing_tier: Option<String>,
+    #[serde(default)]
+    pub strengths: Vec<String>,
+    pub description: Option<String>,
+}
+
+/// A route rule: defines a virtual model and its required capability contract, mapping to targets.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RouteRule {
-    pub alias: String,
+    pub virtual_model_id: String,
+    #[serde(default)]
+    pub display_name: String,
+    #[serde(default)]
+    pub capabilities: RouteCapabilities,
+    #[serde(default)]
+    pub metadata: RouteMetadata,
     pub targets: Vec<RouteTarget>,
 }
 
@@ -45,13 +93,31 @@ async fn ensure_initialized() {
                 Ok(store_data) => {
                     let mut rules = HashMap::new();
                     for (alias, json) in store_data.route_rules {
-                        match serde_json::from_str::<RouteRule>(&json) {
-                            Ok(rule) => {
-                                rules.insert(alias, rule);
+                        match serde_json::from_str::<serde_json::Value>(&json) {
+                            Ok(mut val) => {
+                                // Migration: handle older format with 'alias' instead of 'virtual_model_id'
+                                if let Some(obj) = val.as_object_mut() {
+                                    if !obj.contains_key("virtual_model_id") && obj.contains_key("alias") {
+                                        let alias_val = obj.remove("alias").unwrap();
+                                        obj.insert("virtual_model_id".to_string(), alias_val.clone());
+                                        if !obj.contains_key("display_name") {
+                                            obj.insert("display_name".to_string(), alias_val);
+                                        }
+                                    }
+                                }
+                                
+                                match serde_json::from_value::<RouteRule>(val) {
+                                    Ok(rule) => {
+                                        rules.insert(alias, rule);
+                                    }
+                                    Err(e) => {
+                                        log::warn!("Failed to map route rule for alias '{}': {}", alias, e);
+                                    }
+                                }
                             }
                             Err(e) => {
                                 log::warn!(
-                                    "Failed to parse route rule for alias '{}': {}",
+                                    "Failed to parse route rule JSON for alias '{}': {}",
                                     alias,
                                     e
                                 );
@@ -86,18 +152,49 @@ struct RouteData {
 // Route rules management
 // ---------------------------------------------------------------------------
 
-/// Set route rules for a specific alias.
-pub async fn set_route_rules(alias: &str, targets: Vec<RouteTarget>) -> Result<()> {
+/// Set route rules for a specific virtual model.
+pub async fn set_route_rules(
+    virtual_model_id: &str,
+    display_name: &str,
+    capabilities: RouteCapabilities,
+    metadata: RouteMetadata,
+    targets: Vec<RouteTarget>,
+) -> Result<()> {
+    // Validate capabilities against models.dev data
+    let mut manager = MetadataManager::new();
+    // Try to pre-load metadata, ignore failure to allow offline operation
+    let _ = manager.get().await;
+
+    for target in &targets {
+        manager
+            .check_capabilities(
+                &target.provider_id,
+                &target.model_id,
+                capabilities.vision,
+                capabilities.tool_calling,
+            )
+            .await
+            .with_context(|| {
+                format!(
+                    "Target {}:{} does not meet capability contract",
+                    target.provider_id, target.model_id
+                )
+            })?;
+    }
+
     ensure_initialized().await;
     {
         let lock = ROUTE_DATA.get().expect("ROUTE_DATA should be initialized");
         let mut data = lock.write().await;
 
         let rule = RouteRule {
-            alias: alias.to_string(),
+            virtual_model_id: virtual_model_id.to_string(),
+            display_name: display_name.to_string(),
+            capabilities,
+            metadata,
             targets,
         };
-        data.rules.insert(alias.to_string(), rule);
+        data.rules.insert(virtual_model_id.to_string(), rule);
     } // Drop lock before persisting
 
     // Persist to store
@@ -254,9 +351,9 @@ async fn persist() -> Result<()> {
         let rules_map: HashMap<String, String> = data
             .rules
             .iter()
-            .map(|(alias, rule)| {
+            .map(|(id, rule)| {
                 (
-                    alias.clone(),
+                    id.clone(),
                     serde_json::to_string(rule).unwrap_or_default(),
                 )
             })

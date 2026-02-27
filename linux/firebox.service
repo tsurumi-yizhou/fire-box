@@ -1,0 +1,23 @@
+[Unit]
+Description=FireBox AI Gateway Service
+Documentation=https://github.com/firebox/firebox
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/firebox-service
+Restart=on-failure
+RestartSec=5s
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.config/fire-box
+
+# Resource limits
+LimitNOFILE=65536
+
+[Install]
+WantedBy=default.target

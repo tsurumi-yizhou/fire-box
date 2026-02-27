@@ -53,7 +53,7 @@ The metrics subsystem implements comprehensive instrumentation throughout the re
 
 ### 4. Metadata Management
 
-The metadata subsystem automatically retrieves and caches model metadata from the `models.dev` service, maintaining current information regarding context window sizes, model capabilities, and pricing structures. This metadata informs routing decisions, enables accurate cost estimation, and provides rich information for user interface displays. The caching mechanism reduces latency and external dependencies whilst ensuring that the service maintains reasonably current information about available models.
+The metadata subsystem serves as the authoritative source for the capabilities of physical models, playing a crucial role in validating routing contracts. It automatically retrieves and caches model metadata from the `models.dev` service, maintaining current information regarding context window sizes, modality support (e.g., vision), pricing structures, and other technical specifications for public cloud models. For local models, this subsystem extracts metadata directly from model files (e.g., GGUF headers). This comprehensive knowledge base enables the routing subsystem to strictly enforce capability contracts, ensuring that physical models assigned to a virtual route genuinely support the required features.
 
 ## Provider Layer Architecture
 

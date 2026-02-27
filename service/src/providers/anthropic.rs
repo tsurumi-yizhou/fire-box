@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::middleware::storage;
 use crate::providers::{
     BoxStream, ChatMessage, Choice, CompletionRequest, CompletionResponse, EmbeddingRequest,
-    EmbeddingResponse, Provider, RetryConfig, StreamEvent, Usage, with_retry,
+    EmbeddingResponse, Provider, RetryConfig, StreamEvent, Usage, with_retry, RuntimeModelInfo,
 };
 
 /// Adapter for Anthropic's Claude API.
@@ -343,16 +343,26 @@ impl Provider for AnthropicProvider {
         bail!("Anthropic provider: embeddings are not supported by the Anthropic API")
     }
 
-    async fn list_models(&self) -> anyhow::Result<Vec<String>> {
+    async fn list_models(&self) -> anyhow::Result<Vec<RuntimeModelInfo>> {
         // Anthropic doesn't have a public models endpoint
         // Return known Claude models
-        Ok(vec![
-            "claude-opus-4-5-20251001".to_string(),
-            "claude-sonnet-4-5-20251001".to_string(),
-            "claude-3-5-sonnet-20241022".to_string(),
-            "claude-3-5-haiku-20241022".to_string(),
-            "claude-3-opus-20240229".to_string(),
-        ])
+        let models = vec![
+            "claude-opus-4-5-20251001",
+            "claude-sonnet-4-5-20251001",
+            "claude-3-5-sonnet-20241022",
+            "claude-3-5-haiku-20241022",
+            "claude-3-opus-20240229",
+        ];
+
+        Ok(models
+            .into_iter()
+            .map(|id| RuntimeModelInfo {
+                id: id.to_string(),
+                owner: "anthropic".to_string(),
+                created: None,
+                context_window: None,
+            })
+            .collect())
     }
 }
 

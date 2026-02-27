@@ -8,7 +8,7 @@ use futures_util::stream;
 use crate::middleware::storage;
 use crate::providers::{
     BoxStream, ChatMessage, Choice, CompletionRequest, CompletionResponse, EmbeddingRequest,
-    EmbeddingResponse, Provider, StreamEvent, Usage,
+    EmbeddingResponse, Provider, RuntimeModelInfo, StreamEvent, Usage,
 };
 
 /// Configuration for the local llama.cpp inference engine.
@@ -484,7 +484,7 @@ impl Provider for LlamaCppProvider {
         })
     }
 
-    async fn list_models(&self) -> anyhow::Result<Vec<String>> {
+    async fn list_models(&self) -> anyhow::Result<Vec<RuntimeModelInfo>> {
         // Task 4: Try to fetch from server first
         let server_url = self.server_url();
         let models_url = format!("{}/v1/models", server_url);
@@ -502,7 +502,12 @@ impl Provider for LlamaCppProvider {
             }
 
             if let Ok(json) = response.json::<ModelsResponse>().await {
-                let models: Vec<String> = json.data.into_iter().map(|m| m.id).collect();
+                let models: Vec<RuntimeModelInfo> = json.data.into_iter().map(|m| RuntimeModelInfo {
+                    id: m.id,
+                    owner: "llamacpp".to_string(),
+                    created: None,
+                    context_window: None,
+                }).collect();
                 if !models.is_empty() {
                     return Ok(models);
                 }
@@ -523,7 +528,12 @@ impl Provider for LlamaCppProvider {
             bail!("No model file configured")
         }
 
-        Ok(vec![model_name])
+        Ok(vec![RuntimeModelInfo {
+            id: model_name,
+            owner: "llamacpp".to_string(),
+            created: None,
+            context_window: None,
+        }])
     }
 }
 

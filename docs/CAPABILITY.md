@@ -46,9 +46,32 @@ message Result {
   optional string message;
 }
 
-// Minimal model info exposed to callers
+message ModelCapabilities {
+  optional bool chat = 1 [default = true];
+  optional bool streaming = 2 [default = true];
+  optional bool embeddings = 3 [default = false];
+  optional bool vision = 4 [default = false];
+  optional bool tool_calling = 5 [default = false];
+}
+
+message ModelMetadata {
+  optional int32 context_window = 1;
+  optional string pricing_tier = 2;
+  repeated string strengths = 3;
+  optional string description = 4;
+}
+
+// Model info exposed to callers, reflecting the routing capability contract
 message ServiceModel {
-  required string id; // The alias or model ID available for use
+  required string id;           // The virtual model ID available for use
+  required string display_name; // Human-readable name
+  optional ModelCapabilities capabilities;
+  optional ModelMetadata metadata;
+}
+
+message Embedding {
+  repeated double values;
+  optional int32 index;
 }
 ```
 
@@ -56,7 +79,7 @@ message ServiceModel {
 
 ### List Available Models
 
-The discovery mechanism enables callers to ascertain which models or model aliases are presently available for utilization within the FireBox service. This capability facilitates dynamic adaptation to the current service configuration without requiring prior knowledge of available models.
+The discovery mechanism enables callers to ascertain which virtual models are presently available for utilization within the FireBox service, along with their guaranteed capabilities. This capability facilitates dynamic adaptation to the current service configuration without requiring prior knowledge of available models.
 
 ```proto
 message ListAvailableModelsRequest {
@@ -65,6 +88,21 @@ message ListAvailableModelsRequest {
 message ListAvailableModelsResponse {
   required Result result;
   repeated ServiceModel models;
+}
+```
+
+### Get Model Metadata
+
+This operation retrieves detailed capabilities and metadata for a specific virtual model ID. This is useful for clients that need to understand constraints (like context window size) or capabilities (like vision support) before initiating a request.
+
+```proto
+message GetModelMetadataRequest {
+  required string model_id;
+}
+
+message GetModelMetadataResponse {
+  required Result result;
+  optional ServiceModel model;
 }
 ```
 
@@ -165,5 +203,25 @@ message CloseStreamRequest {
 
 message CloseStreamResponse {
   required Result result;
+}
+```
+
+## Embedding Operations
+
+### Embed
+
+The embedding operation transforms textual input into high-dimensional vector representations, enabling semantic search, similarity calculations, and other vector-based operations. This capability is fundamental to applications requiring semantic understanding of text, such as retrieval-augmented generation systems, document clustering, and semantic search implementations. The operation supports batch processing of multiple input texts, thereby enabling efficient vectorization of document collections.
+
+```proto
+message EmbedRequest {
+  required string model_id;
+  repeated string inputs; // Batch embedding support
+  optional string encoding_format; // "float" or "base64"
+}
+
+message EmbedResponse {
+  required Result result;
+  repeated Embedding embeddings;
+  optional Usage usage;
 }
 ```

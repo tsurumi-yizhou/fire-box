@@ -5,6 +5,7 @@
 
 Cargo.lock
 /target/
+build/
 
 *.env
 ref/

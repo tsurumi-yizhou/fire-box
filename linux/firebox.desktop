@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=FireBox
+Exec=/usr/bin/firebox-service %u
+Icon=firebox
+Terminal=false
+Categories=Utility;
+MimeType=x-scheme-handler/firebox;

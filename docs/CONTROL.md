@@ -194,7 +194,9 @@ message SetModelEnabledResponse {
 
 ### Set Route Rules
 
-This operation establishes routing rules that map virtual model identifiers (aliases) to one or more physical provider-model combinations. The routing system supports multiple strategies, including failover (attempting targets sequentially) and random selection (distributing load across targets). This abstraction layer enables client applications to reference models by stable aliases whilst the underlying provider configuration may change.
+This operation defines a virtual model and its required capabilities (a Capability Contract). The routing system ensures that any physical provider/model assigned to this rule fulfills these requirements. This abstraction layer enables client applications to reference models by stable identifiers with guaranteed capabilities, whilst the underlying provider configuration may change dynamically as long as the targets fulfill the contract.
+
+> **Note:** The validation process relies on the `models.dev` service as the primary source of truth for the capabilities of public cloud models (e.g., from OpenAI, Anthropic). For local models, capabilities are derived from the model file metadata.
 
 ```proto
 message RouteTarget {
@@ -207,10 +209,29 @@ enum RouteStrategy {
   ROUTE_STRATEGY_RANDOM = 2;   // Randomly select target
 }
 
+message ModelCapabilities {
+  optional bool chat = 1 [default = true];
+  optional bool streaming = 2 [default = true];
+  optional bool embeddings = 3 [default = false];
+  optional bool vision = 4 [default = false];
+  optional bool tool_calling = 5 [default = false];
+}
+
+message RouteMetadata {
+  optional int32 context_window = 1;      // Required minimum context window
+  optional string pricing_tier = 2;       // Pricing category (e.g., "free", "low", "high")
+  repeated string strengths = 3;          // Required strengths (e.g., "coding", "reasoning")
+  optional string description = 4;        // Human-readable description of this virtual model's persona/specialty
+}
+
 message SetRouteRulesRequest {
-  required string alias; // e.g., "gpt-4", "claude-3"
-  repeated RouteTarget targets;
-  optional RouteStrategy strategy; // Defaults to FAILOVER
+  required string virtual_model_id;       // The virtual model ID exposed to clients (e.g., "coding-assistant")
+  required string display_name;           // Human-readable name (e.g., "Enterprise Coding Assistant")
+  required ModelCapabilities capabilities; // Capability contract targets must fulfill
+  optional RouteMetadata metadata;        // Additional metadata and constraints
+  
+  repeated RouteTarget targets;           // Physical models that fulfill these requirements
+  optional RouteStrategy strategy;        // Defaults to FAILOVER
 }
 
 message SetRouteRulesResponse {
@@ -220,15 +241,18 @@ message SetRouteRulesResponse {
 
 ### Get Route Rules
 
-This operation retrieves the routing configuration for a specified virtual model identifier (alias), returning the ordered list of target providers and models along with the routing strategy employed.
+This operation retrieves the routing configuration and capability contract for a specified virtual model identifier.
 
 ```proto
 message GetRouteRulesRequest {
-  required string alias;
+  required string virtual_model_id;
 }
 
 message GetRouteRulesResponse {
   required Result result;
+  optional string display_name;
+  optional ModelCapabilities capabilities;
+  optional RouteMetadata metadata;
   repeated RouteTarget targets;
   optional RouteStrategy strategy;
 }

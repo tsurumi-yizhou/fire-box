@@ -17,7 +17,7 @@ use tokio::sync::Mutex;
 use crate::middleware::storage;
 use crate::providers::{
     BoxStream, CompletionRequest, CompletionResponse, EmbeddingRequest, EmbeddingResponse,
-    Provider, StreamEvent,
+    Provider, StreamEvent, RuntimeModelInfo,
 };
 
 // ---------------------------------------------------------------------------
@@ -510,7 +510,7 @@ impl Provider for CopilotProvider {
         bail!("Copilot provider: embeddings are not supported by the GitHub Copilot API")
     }
 
-    async fn list_models(&self) -> Result<Vec<String>> {
+    async fn list_models(&self) -> Result<Vec<RuntimeModelInfo>> {
         use serde::Deserialize;
 
         #[derive(Deserialize)]
@@ -521,6 +521,8 @@ impl Provider for CopilotProvider {
         #[derive(Deserialize)]
         struct ModelInfo {
             id: String,
+            created: Option<u64>,
+            owned_by: Option<String>,
         }
 
         // Copilot uses the OpenAI-compatible API at githubcopilot.com
@@ -544,7 +546,16 @@ impl Provider for CopilotProvider {
         }
 
         let model_list: ModelList = response.json().await?;
-        Ok(model_list.data.into_iter().map(|m| m.id).collect())
+        Ok(model_list
+            .data
+            .into_iter()
+            .map(|m| RuntimeModelInfo {
+                id: m.id,
+                owner: m.owned_by.unwrap_or_else(|| "github".to_string()),
+                created: m.created,
+                context_window: None,
+            })
+            .collect())
     }
 }
 

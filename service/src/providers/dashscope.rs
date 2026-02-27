@@ -20,7 +20,7 @@ use sha2::{Digest as _, Sha256};
 use crate::middleware::storage;
 use crate::providers::{
     BoxStream, CompletionRequest, CompletionResponse, EmbeddingRequest, EmbeddingResponse,
-    Provider, StreamEvent, config::DashScopeConfig,
+    Provider, StreamEvent, config::DashScopeConfig, RuntimeModelInfo,
 };
 
 // ---------------------------------------------------------------------------
@@ -865,10 +865,26 @@ impl Provider for DashScopeProvider {
         )
     }
 
-    async fn list_models(&self) -> Result<Vec<String>> {
+    async fn list_models(&self) -> Result<Vec<RuntimeModelInfo>> {
         // DashScope doesn't provide a public models API, so we return
         // the two model categories available via Qwen OAuth.
-        Ok(vec!["coder-model".to_string(), "vision-model".to_string()])
+        let models = vec![
+            "qwen-max",
+            "qwen-plus",
+            "qwen-turbo",
+            "qwen-vl-plus",
+            "qwen-vl-max",
+        ];
+
+        Ok(models
+            .into_iter()
+            .map(|id| RuntimeModelInfo {
+                id: id.to_string(),
+                owner: "alibaba".to_string(),
+                created: None,
+                context_window: None,
+            })
+            .collect())
     }
 }
 

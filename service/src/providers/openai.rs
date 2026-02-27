@@ -4,7 +4,7 @@ use futures_util::stream;
 use crate::middleware::storage;
 use crate::providers::{
     BoxStream, ChatMessage, Choice, CompletionRequest, CompletionResponse, EmbeddingRequest,
-    EmbeddingResponse, Provider, RetryConfig, StreamEvent, Usage, with_retry,
+    EmbeddingResponse, Provider, RetryConfig, RuntimeModelInfo, StreamEvent, Usage, with_retry,
 };
 
 /// Adapter for the OpenAI API and OpenAI-compatible endpoints.
@@ -361,7 +361,7 @@ impl Provider for OpenAiProvider {
         Ok(EmbeddingResponse { model, data, usage })
     }
 
-    async fn list_models(&self) -> anyhow::Result<Vec<String>> {
+    async fn list_models(&self) -> anyhow::Result<Vec<RuntimeModelInfo>> {
         use serde::Deserialize;
 
         #[derive(Deserialize)]
@@ -389,7 +389,12 @@ impl Provider for OpenAiProvider {
         }
 
         let model_list: ModelList = response.json().await?;
-        Ok(model_list.data.into_iter().map(|m| m.id).collect())
+        Ok(model_list.data.into_iter().map(|m| RuntimeModelInfo {
+            id: m.id,
+            owner: "openai".to_string(),
+            created: None,
+            context_window: None,
+        }).collect())
     }
 }
 

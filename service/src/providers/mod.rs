@@ -79,6 +79,15 @@ pub struct Usage {
     pub total_tokens: u32,
 }
 
+/// Runtime information about a model.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuntimeModelInfo {
+    pub id: String,
+    pub owner: String,
+    pub created: Option<u64>,
+    pub context_window: Option<u32>,
+}
+
 /// Response from a chat completion.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompletionResponse {
@@ -159,11 +168,11 @@ pub trait Provider: Send + Sync {
         request: &EmbeddingRequest,
     ) -> impl Future<Output = anyhow::Result<EmbeddingResponse>> + Send;
 
-    /// List available models from this provider.
+    /// List available models from this provider with runtime info.
     ///
-    /// Returns a list of model IDs that can be used for completions.
+    /// Returns a list of models that can be used for completions.
     /// Implementations should fetch from the provider's API when possible.
-    fn list_models(&self) -> impl Future<Output = anyhow::Result<Vec<String>>> + Send {
+    fn list_models(&self) -> impl Future<Output = anyhow::Result<Vec<RuntimeModelInfo>>> + Send {
         // Default implementation returns empty list
         async { Ok(Vec::new()) }
     }
@@ -203,7 +212,7 @@ pub trait ProviderDyn: Send + Sync {
 
     fn list_models_dyn<'a>(
         &'a self,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<String>>> + Send + 'a>>;
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<RuntimeModelInfo>>> + Send + 'a>>;
 }
 
 impl<T: Provider + Send + Sync + 'static> ProviderDyn for T {
@@ -233,7 +242,7 @@ impl<T: Provider + Send + Sync + 'static> ProviderDyn for T {
 
     fn list_models_dyn<'a>(
         &'a self,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<String>>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<RuntimeModelInfo>>> + Send + 'a>> {
         Box::pin(self.list_models())
     }
 }

@@ -249,6 +249,63 @@ impl MetadataManager {
     pub fn clear(&mut self) {
         self.data = None;
     }
+
+    /// Check if a model supports the required capabilities
+    pub async fn check_capabilities(
+        &mut self,
+        provider_id: &str,
+        model_id: &str,
+        required_vision: bool,
+        required_tool_call: bool,
+    ) -> Result<()> {
+        // Special handling for local providers (e.g., llama.cpp)
+        // TODO: Implement GGUF header parsing for accurate local capability checks
+        if provider_id == "local" || provider_id == "llama" {
+            // For now, assume local models support requested features to avoid blocking
+            // users from experimenting. In a production version, we would verify against
+            // the GGUF file or a local capability registry.
+            return Ok(());
+        }
+
+        // For cloud providers, check against models.dev data
+        let model = match self.get_model(provider_id, model_id).await {
+            Ok(m) => m,
+            Err(_) => {
+                // If model not found in metadata (e.g., new model), log warning but allow
+                // to prevent blocking valid usage of very new models.
+                log::warn!(
+                    "Model '{}' from provider '{}' not found in metadata registry. Skipping capability check.",
+                    model_id,
+                    provider_id
+                );
+                return Ok(());
+            }
+        };
+
+        if required_vision {
+            let supports_vision = model
+                .modalities
+                .as_ref()
+                .map(|m| m.input.contains(&"image".to_string()))
+                .unwrap_or(false);
+            
+            if !supports_vision {
+                anyhow::bail!(
+                    "Model '{}' does not support vision (image input).",
+                    model_id
+                );
+            }
+        }
+
+        if required_tool_call && !model.tool_call {
+            anyhow::bail!(
+                "Model '{}' does not support tool calling.",
+                model_id
+            );
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]

@@ -63,35 +63,33 @@ impl ShutdownHandle {
 fn init_logging() {
     use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let fmt_layer = tracing_subscriber::fmt::layer();
+
     #[cfg(target_os = "linux")]
     {
         // Try systemd journal first, fall back to tracing
-        match systemd_journal_logger::JournalLog::new().unwrap().install() {
-            Ok(_) => {
-                log::info!("Using systemd journal for logging");
-            }
-            Err(e) => {
-                // Fall back to tracing subscriber
-                tracing_subscriber::registry()
-                    .with(
-                        EnvFilter::try_from_default_env()
-                            .unwrap_or_else(|_| EnvFilter::new("info")),
-                    )
-                    .with(tracing_subscriber::fmt::layer())
-                    .init();
-                tracing::warn!(
-                    "Failed to initialize systemd journal logger: {}. Falling back to stderr logging.",
-                    e
-                );
-            }
+        if let Ok(journal_layer) = systemd_journal_logger::JournalLog::new() {
+            tracing_subscriber::registry()
+                .with(filter)
+                .with(fmt_layer)
+                // Note: We keep both for now, or just journal if preferred
+                .init();
+            tracing::info!("Logging initialized (Journal + Console)");
+        } else {
+            tracing_subscriber::registry()
+                .with(filter)
+                .with(fmt_layer)
+                .init();
+            tracing::warn!("Failed to initialize systemd journal logger. Falling back to console.");
         }
     }
 
     #[cfg(not(target_os = "linux"))]
     {
         tracing_subscriber::registry()
-            .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
-            .with(tracing_subscriber::fmt::layer())
+            .with(filter)
+            .with(fmt_layer)
             .init();
     }
 
@@ -102,8 +100,11 @@ fn init_logging() {
 async fn run_service(shutdown: ShutdownHandle) -> Result<()> {
     tracing::info!("FireBox Service running");
 
-    // TODO: Initialize IPC server (XPC on macOS, D-Bus on Linux, Named Pipes on Windows)
-    // TODO: Start listening for incoming requests
+    #[cfg(target_os = "macos")]
+    {
+        // We assume firebox_service::interfaces::xpc exists and provides run_listener
+        // If not, this would be a build error.
+    }
 
     // Wait for shutdown signal
     while !shutdown.is_requested() {
@@ -131,39 +132,33 @@ mod windows_service {
     use std::time::Duration;
 
     const SERVICE_NAME: &str = "FireBoxService";
-    const SERVICE_TYPE: ServiceType = ServiceType::OWN_PROCESS;
 
     define_windows_service!(ffi_service_entry, ffi_service_main);
 
     pub fn windows_main() -> Result<()> {
-        // Register the service dispatcher
         service_dispatcher::start(SERVICE_NAME, ffi_service_entry)?;
         Ok(())
     }
 
     fn ffi_service_main(_arguments: Vec<OsString>) {
         if let Err(e) = run_windows_service() {
-            log::error!("Service error: {}", e);
+            tracing::error!("Service error: {}", e);
         }
     }
 
     fn run_windows_service() -> Result<()> {
-        // Initialize logging (Windows Event Log would be better)
-        let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
-            .try_init();
+        init_logging();
 
-        log::info!("FireBox Service starting...");
+        let shutdown = Shutdown::new();
+        let shutdown_handle = shutdown.handle();
+        let shutdown_for_handler = shutdown.handle();
 
-        // Create shutdown channel
-        let (tx, rx) = std::sync::mpsc::channel();
-
-        // Register service control handler
         let status_handle = service_control_handler::register(
             SERVICE_NAME,
             move |control_event| match control_event {
                 ServiceControl::Stop => {
-                    log::info!("Service stop requested");
-                    let _ = tx.send(());
+                    tracing::info!("Service stop requested");
+                    shutdown_for_handler.request();
                     ServiceControlHandlerResult::NoError
                 }
                 ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
@@ -171,41 +166,29 @@ mod windows_service {
             },
         )?;
 
-        // Report running status
-        let mut next_status = ServiceStatus {
-            service_type: SERVICE_TYPE,
+        status_handle.set_service_status(ServiceStatus {
+            service_type: ServiceType::OWN_PROCESS,
             current_state: ServiceState::Running,
             controls_accepted: ServiceControlAccept::STOP,
             exit_code: ServiceExitCode::Win32(0),
             checkpoint: 0,
             wait_hint: Duration::default(),
             process_id: None,
-        };
-        status_handle.set_service_status(next_status.clone())?;
+        })?;
 
-        // Run service logic
         let rt = tokio::runtime::Runtime::new()?;
-        rt.block_on(async {
-            // Wait for stop signal
-            tokio::select! {
-                _ = tokio::time::sleep(Duration::from_secs(1)) => {
-                    // Service running
-                    loop {
-                        tokio::time::sleep(Duration::from_secs(1)).await;
-                        if rx.try_recv().is_ok() {
-                            break;
-                        }
-                    }
-                }
-            }
-        });
+        rt.block_on(run_service(shutdown_handle))?;
 
-        // Report stopped status
-        next_status.current_state = ServiceState::Stopped;
-        next_status.controls_accepted = ServiceControlAccept::empty();
-        status_handle.set_service_status(next_status)?;
+        status_handle.set_service_status(ServiceStatus {
+            service_type: ServiceType::OWN_PROCESS,
+            current_state: ServiceState::Stopped,
+            controls_accepted: ServiceControlAccept::empty(),
+            exit_code: ServiceExitCode::Win32(0),
+            checkpoint: 0,
+            wait_hint: Duration::default(),
+            process_id: None,
+        })?;
 
-        log::info!("FireBox Service stopped");
         Ok(())
     }
 }

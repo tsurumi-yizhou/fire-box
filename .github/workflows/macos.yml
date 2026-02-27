@@ -27,10 +27,19 @@ jobs:
             target/
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Build Rust service
-        run: cargo build --workspace --release
+      - name: Configure with CMake
+        run: cmake -B build
 
-      - name: Build macOS application
+      - name: Build with CMake
+        run: cmake --build build --config Release
+
+      - name: Create package
         run: |
-          cd macos
-          swift build -c release
+          cd build
+          cpack -C Release
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: FireBox-macOS
+          path: build/FireBox-*.pkg

@@ -8,6 +8,9 @@ on:
 
 jobs:
   build:
+    strategy:
+      matrix:
+        arch: [x64, ARM64]
     runs-on: windows-latest
     steps:
       - name: Checkout
@@ -16,10 +19,12 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@v5
         with:
-          dotnet-version: '8.0.x'
+          dotnet-version: '10.0.x'
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.arch == 'ARM64' && 'aarch64-pc-windows-msvc' || 'x86_64-pc-windows-msvc' }}
 
       - name: Cache Rust dependencies
         uses: actions/cache@v5
@@ -30,12 +35,21 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-${{ matrix.arch }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Build Rust service
-        run: cargo build --workspace --release
+      - name: Configure with CMake
+        run: cmake -B build -A ${{ matrix.arch }}
 
-      - name: Build Windows application
+      - name: Build with CMake
+        run: cmake --build build --config Release
+
+      - name: Create package
         run: |
-          cd windows
-          dotnet build Firebox.slnx -c Release
+          cd build
+          cpack -C Release
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: FireBox-Windows-${{ matrix.arch }}
+          path: build/FireBox-*.exe
