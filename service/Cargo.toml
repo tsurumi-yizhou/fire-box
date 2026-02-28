@@ -44,7 +44,7 @@ libc = "0.2"
 # Windows: Service Control Manager + COM server support
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-service.workspace = true
-windows-core = "0.58"
+windows-core = "0.62"
 windows = { version = "0.58", features = [
     "implement",
     "Win32_Foundation",
