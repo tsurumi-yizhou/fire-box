@@ -1,5 +1,4 @@
 import SwiftUI
-import Charts
 
 struct DashboardView: View {
     @EnvironmentObject var appState: AppState
@@ -7,13 +6,26 @@ struct DashboardView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                Text("Dashboard")
-                    .font(.largeTitle)
-                    .bold()
-                    .padding(.horizontal)
+                HStack {
+                    Text("Dashboard")
+                        .font(.largeTitle)
+                        .bold()
+
+                    Spacer()
+
+                    HStack(spacing: 6) {
+                        Image(systemName: "circle.fill")
+                            .font(.system(size: 8))
+                            .foregroundColor(appState.serviceRunning ? .green : .red)
+                        Text(appState.serviceRunning ? "Service Running" : "Service Stopped")
+                            .font(.callout)
+                            .foregroundColor(.secondary)
+                    }
+                }
+                .padding(.horizontal)
 
                 if let metrics = appState.metrics {
-                    MetricsCardsView(metrics: metrics)
+                    MetricsCardsView(metrics: metrics, connectionCount: appState.connections.count)
                         .padding(.horizontal)
 
                     Divider()
@@ -22,8 +34,19 @@ struct DashboardView: View {
                     RecentActivityView()
                         .padding(.horizontal)
                 } else {
-                    ProgressView("Loading metrics...")
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    VStack(spacing: 12) {
+                        if appState.serviceRunning {
+                            ProgressView("Loading metrics…")
+                        } else {
+                            Image(systemName: "exclamationmark.triangle")
+                                .font(.system(size: 48))
+                                .foregroundColor(.secondary)
+                            Text("Service is not running")
+                                .font(.title3)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
             .padding(.vertical)
@@ -33,6 +56,7 @@ struct DashboardView: View {
 
 struct MetricsCardsView: View {
     let metrics: MetricsSnapshot
+    let connectionCount: Int
 
     var body: some View {
         LazyVGrid(columns: [
@@ -42,42 +66,56 @@ struct MetricsCardsView: View {
         ], spacing: 16) {
             MetricCard(
                 title: "Total Requests",
-                value: "\(metrics.totalRequests)",
+                value: formatNumber(metrics.requestsTotal),
                 icon: "arrow.up.arrow.down.circle.fill",
                 color: .blue
             )
 
             MetricCard(
+                title: "Failed Requests",
+                value: formatNumber(metrics.requestsFailed),
+                icon: "xmark.circle.fill",
+                color: .red
+            )
+
+            MetricCard(
                 title: "Input Tokens",
-                value: formatNumber(metrics.totalTokensInput),
+                value: formatNumber(metrics.promptTokensTotal),
                 icon: "arrow.down.circle.fill",
                 color: .green
             )
 
             MetricCard(
                 title: "Output Tokens",
-                value: formatNumber(metrics.totalTokensOutput),
+                value: formatNumber(metrics.completionTokensTotal),
                 icon: "arrow.up.circle.fill",
                 color: .orange
             )
 
             MetricCard(
                 title: "Total Cost",
-                value: String(format: "$%.2f", metrics.totalCost),
+                value: String(format: "$%.2f", metrics.costTotal),
                 icon: "dollarsign.circle.fill",
                 color: .purple
             )
 
             MetricCard(
+                title: "Avg Latency",
+                value: "\(metrics.latencyAvgMs) ms",
+                icon: "clock.fill",
+                color: .yellow
+            )
+
+            MetricCard(
                 title: "Active Connections",
-                value: "\(metrics.activeConnections)",
+                value: "\(connectionCount)",
                 icon: "network",
                 color: .cyan
             )
 
             MetricCard(
                 title: "Avg Cost/Request",
-                value: String(format: "$%.4f", metrics.totalRequests > 0 ? metrics.totalCost / Double(metrics.totalRequests) : 0),
+                value: String(format: "$%.4f", metrics.requestsTotal > 0 ? metrics.costTotal / Double(metrics.requestsTotal) : 0),
                 icon: "chart.line.uptrend.xyaxis.circle.fill",
                 color: .pink
             )
@@ -141,16 +179,16 @@ struct RecentActivityView: View {
                             .foregroundColor(.blue)
 
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(connection.programName)
+                            Text(connection.clientName)
                                 .font(.headline)
-                            Text("\(connection.requestCount) requests")
+                            Text("\(connection.requestsCount) requests")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
 
                         Spacer()
 
-                        Text(timeAgo(from: connection.lastActivityMs))
+                        Text(formatDate(connection.connectedAtMs))
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
@@ -162,10 +200,11 @@ struct RecentActivityView: View {
         }
     }
 
-    private func timeAgo(from timestampMs: Int64) -> String {
+    private func formatDate(_ timestampMs: Int64) -> String {
         let date = Date(timeIntervalSince1970: TimeInterval(timestampMs) / 1000)
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .abbreviated
-        return formatter.localizedString(for: date, relativeTo: Date())
+        let formatter = DateFormatter()
+        formatter.dateStyle = .short
+        formatter.timeStyle = .short
+        return formatter.string(from: date)
     }
 }

@@ -9,7 +9,13 @@ let package = Package(
         .macOS(.v15)
     ],
     targets: [
-        .executableTarget(name: "App", path: "Sources/App"),
+        .executableTarget(
+            name: "App",
+            path: "Sources/App",
+            resources: [
+                .process("Resources")
+            ]
+        ),
         .executableTarget(
             name: "Helper",
             path: "Sources/Helper",

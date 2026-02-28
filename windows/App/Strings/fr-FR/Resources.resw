@@ -1,0 +1,358 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root>
+  <xsd:schema id="root" xmlns="" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:msdata="urn:schemas-microsoft-com:xml-msdata">
+    <xsd:import namespace="http://www.w3.org/XML/1998/namespace" />
+    <xsd:element name="root" msdata:IsDataSet="true">
+      <xsd:complexType>
+        <xsd:choice maxOccurs="unbounded">
+          <xsd:element name="metadata">
+            <xsd:complexType>
+              <xsd:sequence>
+                <xsd:element name="value" type="xsd:string" minOccurs="0" />
+              </xsd:sequence>
+              <xsd:attribute name="name" use="required" type="xsd:string" />
+              <xsd:attribute name="type" type="xsd:string" />
+              <xsd:attribute name="mimetype" type="xsd:string" />
+              <xsd:attribute ref="xml:space" />
+            </xsd:complexType>
+          </xsd:element>
+          <xsd:element name="assembly">
+            <xsd:complexType>
+              <xsd:attribute name="alias" type="xsd:string" />
+              <xsd:attribute name="name" type="xsd:string" />
+            </xsd:complexType>
+          </xsd:element>
+          <xsd:element name="data">
+            <xsd:complexType>
+              <xsd:sequence>
+                <xsd:element name="value" type="xsd:string" minOccurs="0" msdata:Ordinal="1" />
+                <xsd:element name="comment" type="xsd:string" minOccurs="0" msdata:Ordinal="2" />
+              </xsd:sequence>
+              <xsd:attribute name="name" type="xsd:string" use="required" msdata:Ordinal="1" />
+              <xsd:attribute name="type" type="xsd:string" msdata:Ordinal="3" />
+              <xsd:attribute name="mimetype" type="xsd:string" msdata:Ordinal="4" />
+              <xsd:attribute ref="xml:space" />
+            </xsd:complexType>
+          </xsd:element>
+        </xsd:choice>
+      </xsd:complexType>
+    </xsd:element>
+  </xsd:schema>
+  <resheader name="resmimetype">
+    <value>text/microsoft-resx</value>
+  </resheader>
+  <resheader name="version">
+    <value>2.0</value>
+  </resheader>
+  <resheader name="reader">
+    <value>System.Resources.ResXResourceReader, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value>
+  </resheader>
+  <resheader name="writer">
+    <value>System.Resources.ResXResourceWriter, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value>
+  </resheader>
+
+  <!-- App Title -->
+  <data name="AppTitle.Text" xml:space="preserve">
+    <value>FireBox</value>
+  </data>
+  <data name="TrayIconTooltip" xml:space="preserve">
+    <value>Passerelle IA FireBox</value>
+  </data>
+  <data name="TrayMenuOpen" xml:space="preserve">
+    <value>Ouvrir FireBox</value>
+  </data>
+  <data name="TrayMenuQuit" xml:space="preserve">
+    <value>Quitter</value>
+  </data>
+
+  <!-- Navigation -->
+  <data name="NavDashboard.Content" xml:space="preserve">
+    <value>Tableau de bord</value>
+  </data>
+  <data name="NavConnections.Content" xml:space="preserve">
+    <value>Connexions</value>
+  </data>
+  <data name="NavProviders.Content" xml:space="preserve">
+    <value>Fournisseurs</value>
+  </data>
+  <data name="NavRoutes.Content" xml:space="preserve">
+    <value>Routes</value>
+  </data>
+  <data name="NavAllowlist.Content" xml:space="preserve">
+    <value>Liste autorisée</value>
+  </data>
+
+  <!-- Dashboard Page -->
+  <data name="DashboardStatus.Text" xml:space="preserve">
+    <value>Statut :</value>
+  </data>
+  <data name="DashboardTotalRequests.Text" xml:space="preserve">
+    <value>Total des requêtes</value>
+  </data>
+  <data name="DashboardFailedRequests.Text" xml:space="preserve">
+    <value>Requêtes échouées</value>
+  </data>
+  <data name="DashboardPromptTokens.Text" xml:space="preserve">
+    <value>Tokens d'invite</value>
+  </data>
+  <data name="DashboardCompletionTokens.Text" xml:space="preserve">
+    <value>Tokens de complétion</value>
+  </data>
+  <data name="DashboardTotalCost.Text" xml:space="preserve">
+    <value>Coût total (USD)</value>
+  </data>
+  <data name="DashboardAvgLatency.Text" xml:space="preserve">
+    <value>Latence moyenne (ms)</value>
+  </data>
+  <data name="DashboardActiveConnections.Text" xml:space="preserve">
+    <value>Connexions actives</value>
+  </data>
+  <data name="DashboardStatusLoading" xml:space="preserve">
+    <value>Chargement…</value>
+  </data>
+  <data name="DashboardStatusConnected" xml:space="preserve">
+    <value>Connecté</value>
+  </data>
+  <data name="DashboardStatusUnavailable" xml:space="preserve">
+    <value>Service indisponible</value>
+  </data>
+
+  <!-- Connections Page -->
+  <data name="ConnectionsTitle.Text" xml:space="preserve">
+    <value>Connexions actives</value>
+  </data>
+  <data name="ConnectionsRefresh.Content" xml:space="preserve">
+    <value>Actualiser</value>
+  </data>
+  <data name="ConnectionsColumnClient.Text" xml:space="preserve">
+    <value>Client</value>
+  </data>
+  <data name="ConnectionsColumnRequests.Text" xml:space="preserve">
+    <value>Requêtes</value>
+  </data>
+  <data name="ConnectionsColumnAppPath.Text" xml:space="preserve">
+    <value>Chemin de l'application</value>
+  </data>
+  <data name="ConnectionsColumnId.Text" xml:space="preserve">
+    <value>ID</value>
+  </data>
+
+  <!-- Providers Page -->
+  <data name="ProvidersTitle.Text" xml:space="preserve">
+    <value>Fournisseurs</value>
+  </data>
+  <data name="ProvidersAddApiKey.Content" xml:space="preserve">
+    <value>Ajouter une clé API</value>
+  </data>
+  <data name="ProvidersAddOAuth.Content" xml:space="preserve">
+    <value>Ajouter OAuth</value>
+  </data>
+  <data name="ProvidersAddLocal.Content" xml:space="preserve">
+    <value>Ajouter un modèle local</value>
+  </data>
+  <data name="ProvidersColumnName.Text" xml:space="preserve">
+    <value>Nom</value>
+  </data>
+  <data name="ProvidersColumnType.Text" xml:space="preserve">
+    <value>Type</value>
+  </data>
+  <data name="ProvidersColumnBaseUrl.Text" xml:space="preserve">
+    <value>URL de base</value>
+  </data>
+  <data name="ProvidersDelete.Content" xml:space="preserve">
+    <value>Supprimer</value>
+  </data>
+
+  <!-- Add API Key Provider Dialog -->
+  <data name="AddApiKeyDialogTitle" xml:space="preserve">
+    <value>Ajouter un fournisseur de clé API</value>
+  </data>
+  <data name="AddApiKeyDialogNameLabel.Text" xml:space="preserve">
+    <value>Nom</value>
+  </data>
+  <data name="AddApiKeyDialogNamePlaceholder" xml:space="preserve">
+    <value>Nom</value>
+  </data>
+  <data name="AddApiKeyDialogTypeLabel.Text" xml:space="preserve">
+    <value>Type de fournisseur</value>
+  </data>
+  <data name="AddApiKeyDialogKeyLabel.Text" xml:space="preserve">
+    <value>Clé API</value>
+  </data>
+  <data name="AddApiKeyDialogKeyPlaceholder" xml:space="preserve">
+    <value>Clé API</value>
+  </data>
+  <data name="AddApiKeyDialogUrlLabel.Text" xml:space="preserve">
+    <value>URL de base (optionnel)</value>
+  </data>
+  <data name="AddApiKeyDialogUrlPlaceholder" xml:space="preserve">
+    <value>URL de base (optionnel)</value>
+  </data>
+  <data name="AddApiKeyDialogPrimaryButton" xml:space="preserve">
+    <value>Ajouter</value>
+  </data>
+  <data name="AddApiKeyDialogCloseButton" xml:space="preserve">
+    <value>Annuler</value>
+  </data>
+
+  <!-- Add OAuth Provider Dialog -->
+  <data name="AddOAuthDialogTitle" xml:space="preserve">
+    <value>Ajouter un fournisseur OAuth</value>
+  </data>
+  <data name="AddOAuthDialogStep2Title" xml:space="preserve">
+    <value>Autoriser dans le navigateur</value>
+  </data>
+  <data name="AddOAuthDialogPrimaryButton" xml:space="preserve">
+    <value>Démarrer</value>
+  </data>
+  <data name="AddOAuthDialogStep2PrimaryButton" xml:space="preserve">
+    <value>J'ai autorisé</value>
+  </data>
+  <data name="AddOAuthDialogHintFormat" xml:space="preserve">
+    <value>Visitez {0} et entrez le code ci-dessus.
+Le code expire dans {1} minutes.</value>
+  </data>
+
+  <!-- Add Local Provider Dialog -->
+  <data name="AddLocalDialogTitle" xml:space="preserve">
+    <value>Ajouter un modèle local</value>
+  </data>
+  <data name="AddLocalDialogPathLabel.Text" xml:space="preserve">
+    <value>Chemin du modèle</value>
+  </data>
+  <data name="AddLocalDialogPathPlaceholder" xml:space="preserve">
+    <value>Chemin du modèle (ex: C:\models\llama-3.gguf)</value>
+  </data>
+  <data name="AddLocalDialogPrimaryButton" xml:space="preserve">
+    <value>Ajouter</value>
+  </data>
+
+  <!-- Delete Provider Dialog -->
+  <data name="DeleteProviderDialogTitle" xml:space="preserve">
+    <value>Supprimer le fournisseur</value>
+  </data>
+  <data name="DeleteProviderDialogContent" xml:space="preserve">
+    <value>Êtes-vous sûr de vouloir supprimer ce fournisseur ?</value>
+  </data>
+  <data name="DeleteProviderDialogPrimaryButton" xml:space="preserve">
+    <value>Supprimer</value>
+  </data>
+  <data name="DeleteProviderDialogCloseButton" xml:space="preserve">
+    <value>Annuler</value>
+  </data>
+
+  <!-- Routes Page -->
+  <data name="RoutesTitle.Text" xml:space="preserve">
+    <value>Règles de routage</value>
+  </data>
+  <data name="RoutesAdd.Content" xml:space="preserve">
+    <value>Ajouter une route</value>
+  </data>
+  <data name="RoutesRefresh.Content" xml:space="preserve">
+    <value>Actualiser</value>
+  </data>
+  <data name="RoutesColumnVirtualModelId.Text" xml:space="preserve">
+    <value>ID du modèle virtuel</value>
+  </data>
+  <data name="RoutesColumnStrategy.Text" xml:space="preserve">
+    <value>Stratégie</value>
+  </data>
+  <data name="RoutesColumnDisplayName.Text" xml:space="preserve">
+    <value>Nom d'affichage</value>
+  </data>
+  <data name="RoutesDelete.Content" xml:space="preserve">
+    <value>Supprimer</value>
+  </data>
+
+  <!-- Add Route Dialog -->
+  <data name="AddRouteDialogTitle" xml:space="preserve">
+    <value>Ajouter une règle de routage</value>
+  </data>
+  <data name="AddRouteDialogVirtualModelIdLabel.Text" xml:space="preserve">
+    <value>ID du modèle virtuel</value>
+  </data>
+  <data name="AddRouteDialogVirtualModelIdPlaceholder" xml:space="preserve">
+    <value>ex: gpt-4</value>
+  </data>
+  <data name="AddRouteDialogDisplayNameLabel.Text" xml:space="preserve">
+    <value>Nom d'affichage</value>
+  </data>
+  <data name="AddRouteDialogDisplayNamePlaceholder" xml:space="preserve">
+    <value>ex: GPT-4 Turbo</value>
+  </data>
+  <data name="AddRouteDialogStrategyLabel.Text" xml:space="preserve">
+    <value>Stratégie</value>
+  </data>
+  <data name="AddRouteDialogTargetProviderLabel.Text" xml:space="preserve">
+    <value>ID du fournisseur cible</value>
+  </data>
+  <data name="AddRouteDialogTargetProviderPlaceholder" xml:space="preserve">
+    <value>ID du fournisseur</value>
+  </data>
+  <data name="AddRouteDialogTargetModelLabel.Text" xml:space="preserve">
+    <value>ID du modèle cible</value>
+  </data>
+  <data name="AddRouteDialogTargetModelPlaceholder" xml:space="preserve">
+    <value>ID du modèle (ex: gpt-4-turbo)</value>
+  </data>
+  <data name="AddRouteDialogPrimaryButton" xml:space="preserve">
+    <value>Enregistrer</value>
+  </data>
+  <data name="AddRouteDialogCloseButton" xml:space="preserve">
+    <value>Annuler</value>
+  </data>
+
+  <!-- Delete Route Dialog -->
+  <data name="DeleteRouteDialogTitle" xml:space="preserve">
+    <value>Supprimer la route</value>
+  </data>
+  <data name="DeleteRouteDialogContentFormat" xml:space="preserve">
+    <value>Supprimer la route "{0}" ?</value>
+  </data>
+  <data name="DeleteRouteDialogPrimaryButton" xml:space="preserve">
+    <value>Supprimer</value>
+  </data>
+  <data name="DeleteRouteDialogCloseButton" xml:space="preserve">
+    <value>Annuler</value>
+  </data>
+
+  <!-- Allowlist Page -->
+  <data name="AllowlistTitle.Text" xml:space="preserve">
+    <value>Applications autorisées</value>
+  </data>
+  <data name="AllowlistRefresh.Content" xml:space="preserve">
+    <value>Actualiser</value>
+  </data>
+  <data name="AllowlistColumnDisplayName.Text" xml:space="preserve">
+    <value>Nom d'affichage</value>
+  </data>
+  <data name="AllowlistColumnAppPath.Text" xml:space="preserve">
+    <value>Chemin de l'application</value>
+  </data>
+  <data name="AllowlistRevoke.Content" xml:space="preserve">
+    <value>Révoquer</value>
+  </data>
+
+  <!-- Revoke Access Dialog -->
+  <data name="RevokeAccessDialogTitle" xml:space="preserve">
+    <value>Révoquer l'accès</value>
+  </data>
+  <data name="RevokeAccessDialogContentFormat" xml:space="preserve">
+    <value>Retirer "{0}" de la liste autorisée ?</value>
+  </data>
+  <data name="RevokeAccessDialogPrimaryButton" xml:space="preserve">
+    <value>Révoquer</value>
+  </data>
+  <data name="RevokeAccessDialogCloseButton" xml:space="preserve">
+    <value>Annuler</value>
+  </data>
+
+  <!-- Common -->
+  <data name="ErrorDialogTitle" xml:space="preserve">
+    <value>Erreur</value>
+  </data>
+  <data name="ErrorDialogCloseButton" xml:space="preserve">
+    <value>OK</value>
+  </data>
+
+</root>

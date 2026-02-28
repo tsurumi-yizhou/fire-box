@@ -20,8 +20,9 @@ use sha2::{Digest as _, Sha256};
 use crate::middleware::storage;
 use crate::providers::{
     BoxStream, CompletionRequest, CompletionResponse, EmbeddingRequest, EmbeddingResponse,
-    Provider, StreamEvent, config::DashScopeConfig, RuntimeModelInfo,
+    Provider, RuntimeModelInfo, StreamEvent, config::DashScopeConfig,
 };
+use crate::providers::{consts, shared};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -52,24 +53,6 @@ const QWEN_DEVICE_GRANT: &str = "urn:ietf:params:oauth:grant-type:device_code";
 const KEYRING_SERVICE: &str = "fire-box-dashscope";
 const KEYRING_USER_OAUTH: &str = "oauth-credentials";
 
-/// Buffer time before token expiry to trigger refresh (in milliseconds)
-const TOKEN_EXPIRY_BUFFER_MS: i64 = 60_000;
-
-// ---------------------------------------------------------------------------
-// HTTP client
-// ---------------------------------------------------------------------------
-
-/// Build a robust HTTP client with proper TLS configuration.
-fn build_http_client() -> Result<reqwest::Client> {
-    reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .connect_timeout(std::time::Duration::from_secs(10))
-        .pool_idle_timeout(std::time::Duration::from_secs(90))
-        .https_only(true)
-        .build()
-        .map_err(|e| anyhow::anyhow!("Failed to build HTTP client: {}", e))
-}
-
 // ---------------------------------------------------------------------------
 // OAuth credentials
 // ---------------------------------------------------------------------------
@@ -95,7 +78,7 @@ impl OAuthCredentials {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as i64;
-        expiry > now_ms + TOKEN_EXPIRY_BUFFER_MS
+        expiry > now_ms + consts::OAUTH_TOKEN_EXPIRY_BUFFER_SECS as i64 * 1000
     }
 }
 
@@ -221,7 +204,12 @@ pub struct QwenOAuthFlow {
 impl QwenOAuthFlow {
     /// Step 1 – request a device code from `chat.qwen.ai`.
     pub async fn start(scope: Option<&str>) -> Result<Self> {
-        let client = build_http_client()?;
+        let client = shared::build_http_client_full(
+            consts::HTTP_TIMEOUT,
+            consts::HTTP_CONNECT_TIMEOUT,
+            consts::HTTP_POOL_IDLE_TIMEOUT,
+            true,
+        );
 
         let (verifier, challenge) = generate_pkce_pair();
         let scope_str = scope.unwrap_or(QWEN_OAUTH_SCOPE);
@@ -239,78 +227,9 @@ impl QwenOAuthFlow {
             .header("Accept", "application/json")
             .body(body)
             .send()
-            .await
-            .map_err(|e| {
-                let url = QWEN_DEVICE_CODE_URL;
-                if e.is_connect() {
-                    anyhow::anyhow!(
-                        "Failed to connect to OAuth server at {}. \
-                        Please check your network connection and firewall settings. \
-                        Original error: {}",
-                        url,
-                        e
-                    )
-                } else if e.is_timeout() {
-                    anyhow::anyhow!(
-                        "OAuth request to {} timed out after 30 seconds. \
-                        Please check your network connection. Original error: {}",
-                        url,
-                        e
-                    )
-                } else if e.is_builder() {
-                    anyhow::anyhow!(
-                        "Failed to build OAuth request to {}. Original error: {}",
-                        url,
-                        e
-                    )
-                } else if e.is_redirect() {
-                    anyhow::anyhow!(
-                        "OAuth request to {} encountered a redirect error. Original error: {}",
-                        url,
-                        e
-                    )
-                } else if e.is_status() {
-                    anyhow::anyhow!(
-                        "OAuth request to {} received an error status. Original error: {}",
-                        url,
-                        e
-                    )
-                } else if e.is_body() {
-                    anyhow::anyhow!(
-                        "OAuth request to {} failed to read response body. Original error: {}",
-                        url,
-                        e
-                    )
-                } else if e.is_decode() {
-                    anyhow::anyhow!(
-                        "OAuth request to {} failed to decode response. Original error: {}",
-                        url,
-                        e
-                    )
-                } else {
-                    anyhow::anyhow!(
-                        "OAuth request to {} failed. Error type: request={}, connect={}, timeout={}, builder={}, redirect={}, status={}, body={}, decode={}. Original error: {}",
-                        url,
-                        e.is_request(),
-                        e.is_connect(),
-                        e.is_timeout(),
-                        e.is_builder(),
-                        e.is_redirect(),
-                        e.is_status(),
-                        e.is_body(),
-                        e.is_decode(),
-                        e
-                    )
-                }
-            })?;
+            .await?;
 
-        if !resp.status().is_success() {
-            bail!(
-                "Qwen device code request failed: HTTP {} – {}",
-                resp.status(),
-                resp.text().await.unwrap_or_default()
-            );
-        }
+        let resp = shared::check_status(resp).await?;
 
         let response: QwenDeviceCodeResponse = resp.json().await?;
         Ok(Self {
@@ -376,7 +295,7 @@ impl QwenOAuthFlow {
                     continue;
                 }
                 (429, Some("slow_down")) | (_, Some("slow_down")) => {
-                    delay += std::time::Duration::from_secs(5);
+                    delay += std::time::Duration::from_secs(consts::OAUTH_SLOW_DOWN_INCREMENT_SECS);
                     continue;
                 }
                 (_, Some("expired_token")) => bail!("Qwen device code expired"),
@@ -402,7 +321,12 @@ impl QwenOAuthFlow {
             .as_deref()
             .ok_or_else(|| anyhow::anyhow!("no refresh token available"))?;
 
-        let client = build_http_client()?;
+        let client = shared::build_http_client_full(
+            consts::HTTP_TIMEOUT,
+            consts::HTTP_CONNECT_TIMEOUT,
+            consts::HTTP_POOL_IDLE_TIMEOUT,
+            true,
+        );
 
         let body = serde_urlencoded::to_string(RefreshBody {
             grant_type: "refresh_token",
@@ -418,13 +342,7 @@ impl QwenOAuthFlow {
             .send()
             .await?;
 
-        if !resp.status().is_success() {
-            bail!(
-                "Qwen token refresh failed: HTTP {} – {}",
-                resp.status(),
-                resp.text().await.unwrap_or_default()
-            );
-        }
+        let resp = shared::check_status(resp).await?;
 
         let tok: TokenResponse = resp.json().await?;
         let at = tok
@@ -548,10 +466,7 @@ impl DashScopeProvider {
     }
 
     fn new_inner(credentials: OAuthCredentials, base_url: &str) -> Self {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(120))
-            .build()
-            .unwrap_or_default();
+        let client = shared::build_http_client(consts::HTTP_TIMEOUT);
         Self {
             credentials,
             base_url: base_url.to_string(),
@@ -642,13 +557,7 @@ impl DashScopeProvider {
             .send()
             .await?;
 
-        if !resp.status().is_success() {
-            bail!(
-                "DashScope API error: HTTP {} – {}",
-                resp.status(),
-                resp.text().await.unwrap_or_default()
-            );
-        }
+        let resp = shared::check_status(resp).await?;
         Ok(resp.json().await?)
     }
 
@@ -714,6 +623,9 @@ impl Provider for DashScopeProvider {
                 message: crate::providers::ChatMessage {
                     role: "assistant".to_string(),
                     content,
+                    tool_calls: None,
+                    tool_call_id: None,
+                    name: None,
                 },
                 finish_reason,
             }],
@@ -760,13 +672,7 @@ impl Provider for DashScopeProvider {
             .send()
             .await?;
 
-        if !response.status().is_success() {
-            bail!(
-                "DashScope API error: HTTP {} – {}",
-                response.status(),
-                response.text().await.unwrap_or_default()
-            );
-        }
+        let response = shared::check_status(response).await?;
 
         let event_stream = response.bytes_stream();
 
@@ -860,31 +766,15 @@ impl Provider for DashScopeProvider {
         _session_id: &str,
         _request: &EmbeddingRequest,
     ) -> Result<EmbeddingResponse> {
-        bail!(
-            "DashScope provider: embeddings are not supported via native protocol. Use OpenAI-compatible endpoint for embeddings."
+        Err(crate::providers::ProviderError::RequestFailed(
+            "DashScope provider does not support embeddings via native protocol".to_string(),
         )
+        .into())
     }
 
     async fn list_models(&self) -> Result<Vec<RuntimeModelInfo>> {
-        // DashScope doesn't provide a public models API, so we return
-        // the two model categories available via Qwen OAuth.
-        let models = vec![
-            "qwen-max",
-            "qwen-plus",
-            "qwen-turbo",
-            "qwen-vl-plus",
-            "qwen-vl-max",
-        ];
-
-        Ok(models
-            .into_iter()
-            .map(|id| RuntimeModelInfo {
-                id: id.to_string(),
-                owner: "alibaba".to_string(),
-                created: None,
-                context_window: None,
-            })
-            .collect())
+        // DashScope does not provide a public models API.
+        Ok(vec![])
     }
 }
 
@@ -1008,6 +898,7 @@ mod tests {
             max_tokens: None,
             temperature: None,
             stream: false,
+            tools: None,
         };
         assert!(p.complete("s1", &req).await.is_err());
     }

@@ -1,0 +1,51 @@
+/* 
+ * Firebox macOS App - English Localizations
+ */
+
+// MARK: - Navigation
+"app.name" = "Firebox";
+"nav.dashboard" = "Dashboard";
+"nav.connections" = "Connections";
+"nav.models" = "Models";
+"nav.providers" = "Providers";
+
+// MARK: - Dashboard
+"dashboard.title" = "Dashboard";
+"dashboard.loading" = "Loading metrics...";
+"dashboard.metric.total_requests" = "Total Requests";
+"dashboard.metric.input_tokens" = "Input Tokens";
+"dashboard.metric.output_tokens" = "Output Tokens";
+"dashboard.metric.total_cost" = "Total Cost";
+"dashboard.metric.active_connections" = "Active Connections";
+"dashboard.metric.avg_cost_request" = "Avg Cost/Request";
+"dashboard.recent_activity.title" = "Recent Activity";
+"dashboard.recent_activity.no_connections" = "No active connections";
+"dashboard.requests" = "requests";
+
+// MARK: - Connections
+"connections.title" = "Connections";
+"connections.no_active" = "No active connections";
+
+// MARK: - Models
+"models.title" = "Models";
+"models.no_models" = "No models available";
+
+// MARK: - Providers
+"providers.title" = "Providers";
+"providers.no_providers" = "No providers configured";
+
+// MARK: - Common Actions
+"action.refresh" = "Refresh";
+"action.add" = "Add";
+"action.delete" = "Delete";
+"action.edit" = "Edit";
+"action.cancel" = "Cancel";
+"action.save" = "Save";
+"action.close" = "Close";
+"action.confirm" = "Confirm";
+
+// MARK: - Status
+"status.connected" = "Connected";
+"status.disconnected" = "Disconnected";
+"status.connecting" = "Connecting...";
+"status.error" = "Error";

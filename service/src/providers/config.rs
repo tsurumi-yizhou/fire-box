@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::middleware::config;
 use crate::providers::ProviderDyn;
 use crate::providers::anthropic::AnthropicProvider;
+use crate::providers::consts;
 use crate::providers::copilot::CopilotProvider;
 use crate::providers::dashscope::DashScopeProvider;
 use crate::providers::llamacpp::{LlamaCppConfig, LlamaCppProvider};
@@ -62,8 +63,11 @@ pub async fn migrate_legacy_providers() {
 
     // — API-key providers (already use configure_provider) ——————————————
     for id in ["openai", "anthropic", "llamacpp"] {
-        if !has(id) && provider_is_configured(id).await {
-            let _ = add_to_provider_index(id).await;
+        if !has(id)
+            && provider_is_configured(id).await
+            && let Err(e) = add_to_provider_index(id).await
+        {
+            tracing::warn!("Legacy migration: failed to add {id} to index: {e}");
         }
     }
 
@@ -73,8 +77,10 @@ pub async fn migrate_legacy_providers() {
             crate::middleware::storage::get_secret("fire-box-copilot", "github-oauth")
     {
         let cfg = ProviderConfig::copilot(token.as_str(), None);
-        if configure_provider("copilot", &cfg).await.is_ok() {
-            let _ = add_to_provider_index("copilot").await;
+        if configure_provider("copilot", &cfg).await.is_ok()
+            && let Err(e) = add_to_provider_index("copilot").await
+        {
+            tracing::warn!("Legacy migration: failed to add copilot to index: {e}");
         }
     }
 
@@ -91,8 +97,10 @@ pub async fn migrate_legacy_providers() {
             creds.expiry_date.unwrap_or(0),
             creds.resource_url,
         );
-        if configure_provider("dashscope", &cfg).await.is_ok() {
-            let _ = add_to_provider_index("dashscope").await;
+        if configure_provider("dashscope", &cfg).await.is_ok()
+            && let Err(e) = add_to_provider_index("dashscope").await
+        {
+            tracing::warn!("Legacy migration: failed to add dashscope to index: {e}");
         }
     }
 }
@@ -174,7 +182,7 @@ pub struct LlamaCppProviderConfig {
 }
 
 fn default_context_size() -> u32 {
-    4096
+    consts::LLAMACPP_DEFAULT_CONTEXT_SIZE
 }
 
 // ---------------------------------------------------------------------------
@@ -347,6 +355,52 @@ impl ProviderConfig {
     }
 
     // -----------------------------------------------------------------------
+    // Validation
+    // -----------------------------------------------------------------------
+
+    /// Validate the configuration, returning an error if any field is invalid.
+    /// Call this at system boundaries (e.g. IPC handlers) before persisting.
+    pub fn validate(&self) -> Result<()> {
+        match self {
+            Self::OpenAi(c) => {
+                if let Some(ref url) = c.base_url {
+                    if url.is_empty() {
+                        anyhow::bail!("base_url must not be empty when provided");
+                    }
+                    url::Url::parse(url).map_err(|e| anyhow::anyhow!("invalid base_url: {e}"))?;
+                }
+            }
+            Self::Anthropic(c) => {
+                if c.api_key.is_empty() {
+                    anyhow::bail!("Anthropic API key must not be empty");
+                }
+                if let Some(ref url) = c.base_url {
+                    if url.is_empty() {
+                        anyhow::bail!("base_url must not be empty when provided");
+                    }
+                    url::Url::parse(url).map_err(|e| anyhow::anyhow!("invalid base_url: {e}"))?;
+                }
+            }
+            Self::Copilot(c) => {
+                if c.oauth_token.as_deref().unwrap_or_default().is_empty() {
+                    anyhow::bail!("Copilot OAuth token must not be empty");
+                }
+            }
+            Self::DashScope(c) => {
+                if c.access_token.as_deref().unwrap_or_default().is_empty() {
+                    anyhow::bail!("DashScope requires an access_token");
+                }
+            }
+            Self::LlamaCpp(c) => {
+                if c.model_path.as_os_str().is_empty() {
+                    anyhow::bail!("llama.cpp model_path must not be empty");
+                }
+            }
+        }
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
     // Serialisation helpers (used for keyring persistence)
     // -----------------------------------------------------------------------
 
@@ -373,18 +427,16 @@ impl ProviderConfig {
                 } else {
                     Some(c.api_key.clone())
                 };
-                let base_url = c.base_url.clone().unwrap_or_else(|| {
-                    // Default to OpenAI
-                    "https://api.openai.com/v1".to_string()
-                });
+                let base_url = c
+                    .base_url
+                    .clone()
+                    .unwrap_or_else(|| consts::OPENAI_BASE_URL.to_string());
                 let p = OpenAiProvider::with_base_url(api_key, base_url);
                 Arc::new(p)
             }
             Self::Anthropic(c) => {
-                let p = match &c.base_url {
-                    Some(url) => AnthropicProvider::with_base_url(c.api_key.clone(), url.clone()),
-                    None => AnthropicProvider::new(c.api_key.clone()),
-                };
+                let url = c.base_url.as_deref().unwrap_or(consts::ANTHROPIC_BASE_URL);
+                let p = AnthropicProvider::new(c.api_key.clone(), url);
                 Arc::new(p)
             }
             Self::Copilot(c) => {
@@ -428,6 +480,7 @@ impl ProviderConfig {
 /// # Errors
 /// Returns an error if the store file cannot be written or serialisation fails.
 pub async fn configure_provider(profile: &str, config: &ProviderConfig) -> Result<()> {
+    config.validate()?;
     let json = config.to_json()?;
     let profile = profile.to_string();
     config::update_config(move |d| {

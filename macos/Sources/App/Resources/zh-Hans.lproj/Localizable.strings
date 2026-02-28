@@ -1,0 +1,51 @@
+/* 
+ * Firebox macOS App - 简体中文本地化
+ */
+
+// MARK: - 导航
+"app.name" = "Firebox";
+"nav.dashboard" = "仪表盘";
+"nav.connections" = "连接";
+"nav.models" = "模型";
+"nav.providers" = "提供商";
+
+// MARK: - 仪表盘
+"dashboard.title" = "仪表盘";
+"dashboard.loading" = "加载指标中...";
+"dashboard.metric.total_requests" = "总请求数";
+"dashboard.metric.input_tokens" = "输入 Token";
+"dashboard.metric.output_tokens" = "输出 Token";
+"dashboard.metric.total_cost" = "总成本";
+"dashboard.metric.active_connections" = "活动连接";
+"dashboard.metric.avg_cost_request" = "平均请求成本";
+"dashboard.recent_activity.title" = "最近活动";
+"dashboard.recent_activity.no_connections" = "无活动连接";
+"dashboard.requests" = "请求";
+
+// MARK: - 连接
+"connections.title" = "连接";
+"connections.no_active" = "无活动连接";
+
+// MARK: - 模型
+"models.title" = "模型";
+"models.no_models" = "无可用模型";
+
+// MARK: - 提供商
+"providers.title" = "提供商";
+"providers.no_providers" = "未配置提供商";
+
+// MARK: - 通用操作
+"action.refresh" = "刷新";
+"action.add" = "添加";
+"action.delete" = "删除";
+"action.edit" = "编辑";
+"action.cancel" = "取消";
+"action.save" = "保存";
+"action.close" = "关闭";
+"action.confirm" = "确认";
+
+// MARK: - 状态
+"status.connected" = "已连接";
+"status.disconnected" = "已断开";
+"status.connecting" = "连接中...";
+"status.error" = "错误";

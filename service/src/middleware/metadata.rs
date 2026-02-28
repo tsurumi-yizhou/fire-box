@@ -161,7 +161,7 @@ impl MetadataManager {
 
     /// Download metadata from the API
     pub async fn download(&mut self) -> Result<&MetadataResponse> {
-        log::info!("Downloading metadata from {}", METADATA_API_URL);
+        tracing::info!("Downloading metadata from {}", METADATA_API_URL);
 
         let client = reqwest::Client::new();
         let response = client
@@ -182,14 +182,15 @@ impl MetadataManager {
         let vendor_count = metadata.len();
         let model_count: usize = metadata.values().map(|v| v.models.len()).sum();
 
-        log::info!(
+        tracing::info!(
             "Downloaded metadata: {} vendors, {} models",
             vendor_count,
             model_count
         );
 
         self.data = Some(metadata);
-        Ok(self.data.as_ref().unwrap())
+        // SAFETY: just assigned Some above
+        Ok(self.data.as_ref().expect("data was just set to Some"))
     }
 
     /// Get cached metadata, downloading if necessary
@@ -197,7 +198,9 @@ impl MetadataManager {
         if self.data.is_none() {
             self.download().await?;
         }
-        Ok(self.data.as_ref().unwrap())
+        self.data
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("metadata download succeeded but data is still None"))
     }
 
     /// Get a specific vendor by ID
@@ -250,6 +253,23 @@ impl MetadataManager {
         self.data = None;
     }
 
+    /// Search for a model across all vendors by model ID.
+    ///
+    /// Returns the first matching model found.
+    pub async fn find_model(&mut self, model_id: &str) -> anyhow::Result<Option<Model>> {
+        // Try to get metadata; if offline, return None gracefully.
+        let metadata = match self.get().await {
+            Ok(m) => m,
+            Err(_) => return Ok(None),
+        };
+        for vendor in metadata.values() {
+            if let Some(m) = vendor.models.get(model_id) {
+                return Ok(Some(m.clone()));
+            }
+        }
+        Ok(None)
+    }
+
     /// Check if a model supports the required capabilities
     pub async fn check_capabilities(
         &mut self,
@@ -273,7 +293,7 @@ impl MetadataManager {
             Err(_) => {
                 // If model not found in metadata (e.g., new model), log warning but allow
                 // to prevent blocking valid usage of very new models.
-                log::warn!(
+                tracing::warn!(
                     "Model '{}' from provider '{}' not found in metadata registry. Skipping capability check.",
                     model_id,
                     provider_id
@@ -288,7 +308,7 @@ impl MetadataManager {
                 .as_ref()
                 .map(|m| m.input.contains(&"image".to_string()))
                 .unwrap_or(false);
-            
+
             if !supports_vision {
                 anyhow::bail!(
                     "Model '{}' does not support vision (image input).",
@@ -298,10 +318,7 @@ impl MetadataManager {
         }
 
         if required_tool_call && !model.tool_call {
-            anyhow::bail!(
-                "Model '{}' does not support tool calling.",
-                model_id
-            );
+            anyhow::bail!("Model '{}' does not support tool calling.", model_id);
         }
 
         Ok(())

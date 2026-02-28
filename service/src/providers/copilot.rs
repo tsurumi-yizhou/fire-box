@@ -17,8 +17,9 @@ use tokio::sync::Mutex;
 use crate::middleware::storage;
 use crate::providers::{
     BoxStream, CompletionRequest, CompletionResponse, EmbeddingRequest, EmbeddingResponse,
-    Provider, StreamEvent, RuntimeModelInfo,
+    Provider, RuntimeModelInfo, StreamEvent, ToolCall,
 };
+use crate::providers::{consts, shared};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -35,6 +36,7 @@ const KEYRING_GITHUB_USER: &str = "github-oauth";
 /// Version string used in API requests, derived from package version at compile time.
 const FIREBOX_VERSION: &str = concat!("fire-box/", env!("CARGO_PKG_VERSION"));
 
+/// Public helper used by the session layer to persist a GitHub OAuth token
 fn store_credential(service: &str, user: &str, secret: &str) -> Result<()> {
     storage::set_secret_with_biometric(service, user, secret)
         .map_err(|e| anyhow::anyhow!("failed to store credential: {e}"))
@@ -138,7 +140,12 @@ impl CopilotProvider {
         Self {
             oauth_token: oauth_token.into(),
             endpoint: COPILOT_CHAT_ENDPOINT.to_string(),
-            client: Self::build_client(),
+            client: shared::build_http_client_full(
+                consts::HTTP_TIMEOUT,
+                consts::HTTP_CONNECT_TIMEOUT,
+                consts::HTTP_POOL_IDLE_TIMEOUT,
+                true,
+            ),
             cached_token: Mutex::new(None),
         }
     }
@@ -148,7 +155,12 @@ impl CopilotProvider {
         Self {
             oauth_token: oauth_token.into(),
             endpoint,
-            client: Self::build_client(),
+            client: shared::build_http_client_full(
+                consts::HTTP_TIMEOUT,
+                consts::HTTP_CONNECT_TIMEOUT,
+                consts::HTTP_POOL_IDLE_TIMEOUT,
+                true,
+            ),
             cached_token: Mutex::new(None),
         }
     }
@@ -163,16 +175,6 @@ impl CopilotProvider {
         &self.oauth_token
     }
 
-    fn build_client() -> reqwest::Client {
-        reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .connect_timeout(std::time::Duration::from_secs(10))
-            .pool_idle_timeout(std::time::Duration::from_secs(90))
-            .https_only(true)
-            .build()
-            .unwrap_or_else(|_| reqwest::Client::new())
-    }
-
     // -----------------------------------------------------------------------
     // OAuth device flow
     // -----------------------------------------------------------------------
@@ -182,7 +184,12 @@ impl CopilotProvider {
     /// Returns the device code, user code, and verification URI.  The caller
     /// should display `user_code` and direct the user to `verification_uri`.
     pub async fn start_device_flow(client_id: Option<&str>) -> Result<DeviceCodeResponse> {
-        let client = Self::build_client();
+        let client = shared::build_http_client_full(
+            consts::HTTP_TIMEOUT,
+            consts::HTTP_CONNECT_TIMEOUT,
+            consts::HTTP_POOL_IDLE_TIMEOUT,
+            true,
+        );
         let resp = client
             .post(GITHUB_DEVICE_CODE_URL)
             .header("Accept", "application/json")
@@ -193,13 +200,7 @@ impl CopilotProvider {
             .send()
             .await?;
 
-        if !resp.status().is_success() {
-            bail!(
-                "device code request failed: HTTP {} – {}",
-                resp.status(),
-                resp.text().await.unwrap_or_default()
-            );
-        }
+        let resp = shared::check_status(resp).await?;
 
         Ok(resp.json().await?)
     }
@@ -213,7 +214,12 @@ impl CopilotProvider {
         interval: u64,
         expires_in: u64,
     ) -> Result<String> {
-        let client = Self::build_client();
+        let client = shared::build_http_client_full(
+            consts::HTTP_TIMEOUT,
+            consts::HTTP_CONNECT_TIMEOUT,
+            consts::HTTP_POOL_IDLE_TIMEOUT,
+            true,
+        );
         let cid = client_id.unwrap_or(DEFAULT_CLIENT_ID);
         let mut delay = std::time::Duration::from_secs(interval);
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(expires_in);
@@ -245,7 +251,10 @@ impl CopilotProvider {
             match poll.error.as_deref() {
                 Some("authorization_pending") => continue,
                 Some("slow_down") => {
-                    delay += std::time::Duration::from_secs(poll.interval.unwrap_or(5));
+                    delay += std::time::Duration::from_secs(
+                        poll.interval
+                            .unwrap_or(consts::OAUTH_SLOW_DOWN_INCREMENT_SECS),
+                    );
                     continue;
                 }
                 Some("expired_token") => bail!("device code expired"),
@@ -261,23 +270,23 @@ impl CopilotProvider {
 
     /// Step 3: Exchange a GitHub OAuth token for a short-lived Copilot API token.
     pub async fn exchange_copilot_token(github_token: &str) -> Result<(String, i64)> {
-        let client = Self::build_client();
-        let resp = client
-            .get(COPILOT_TOKEN_URL)
-            .header("Authorization", format!("token {github_token}"))
-            .header("Accept", "application/json")
-            .header("Editor-Version", FIREBOX_VERSION)
-            .header("Editor-Plugin-Version", FIREBOX_VERSION)
-            .send()
-            .await?;
-
-        if !resp.status().is_success() {
-            bail!(
-                "Copilot token exchange failed: HTTP {} – {}",
-                resp.status(),
-                resp.text().await.unwrap_or_default()
-            );
-        }
+        let client = shared::build_http_client_full(
+            consts::HTTP_TIMEOUT,
+            consts::HTTP_CONNECT_TIMEOUT,
+            consts::HTTP_POOL_IDLE_TIMEOUT,
+            true,
+        );
+        let resp = shared::check_status(
+            client
+                .get(COPILOT_TOKEN_URL)
+                .header("Authorization", format!("token {github_token}"))
+                .header("Accept", "application/json")
+                .header("Editor-Version", FIREBOX_VERSION)
+                .header("Editor-Plugin-Version", FIREBOX_VERSION)
+                .send()
+                .await?,
+        )
+        .await?;
 
         let body: CopilotTokenBody = resp.json().await?;
         Ok((body.token, body.expires_at))
@@ -301,8 +310,8 @@ impl CopilotProvider {
     pub async fn authenticate(client_id: Option<&str>) -> Result<Self> {
         let device = Self::start_device_flow(client_id).await?;
 
-        println!("Go to:  {}", device.verification_uri);
-        println!("Enter:  {}", device.user_code);
+        tracing::info!("Go to:  {}", device.verification_uri);
+        tracing::info!("Enter:  {}", device.user_code);
 
         let github_token = Self::poll_for_token(
             client_id,
@@ -312,8 +321,12 @@ impl CopilotProvider {
         )
         .await?;
 
-        // Best-effort keyring storage.
-        let _ = store_credential(KEYRING_SERVICE, KEYRING_GITHUB_USER, &github_token);
+        if let Err(e) = store_credential(KEYRING_SERVICE, KEYRING_GITHUB_USER, &github_token) {
+            tracing::warn!(
+                "Failed to store GitHub token in keyring: {}",
+                e.root_cause()
+            );
+        }
 
         let (copilot_token, expires_at) = Self::exchange_copilot_token(&github_token).await?;
 
@@ -350,7 +363,7 @@ impl CopilotProvider {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs() as i64;
-            if cached.expires_at > now + 60 {
+            if cached.expires_at > now + consts::OAUTH_TOKEN_EXPIRY_BUFFER_SECS as i64 {
                 return Ok(cached.token.clone());
             }
         }
@@ -376,24 +389,18 @@ impl Provider for CopilotProvider {
         let token = self.ensure_copilot_token().await?;
 
         let url = format!("{}/chat/completions", self.endpoint);
-        let resp = self
-            .client
-            .post(&url)
-            .header("Authorization", format!("Bearer {token}"))
-            .header("Content-Type", "application/json")
-            .header("Editor-Version", FIREBOX_VERSION)
-            .header("Copilot-Integration-Id", "fire-box")
-            .json(request)
-            .send()
-            .await?;
-
-        if !resp.status().is_success() {
-            bail!(
-                "Copilot completion failed: HTTP {} – {}",
-                resp.status(),
-                resp.text().await.unwrap_or_default()
-            );
-        }
+        let resp = shared::check_status(
+            self.client
+                .post(&url)
+                .header("Authorization", format!("Bearer {token}"))
+                .header("Content-Type", "application/json")
+                .header("Editor-Version", FIREBOX_VERSION)
+                .header("Copilot-Integration-Id", "fire-box")
+                .json(request)
+                .send()
+                .await?,
+        )
+        .await?;
 
         Ok(resp.json().await?)
     }
@@ -410,94 +417,128 @@ impl Provider for CopilotProvider {
         let url = format!("{}/chat/completions", self.endpoint);
         let body = serde_json::json!({
             "model": request.model,
-            "messages": request.messages.iter().map(|m| serde_json::json!({
-                "role": m.role,
-                "content": m.content
-            })).collect::<Vec<_>>(),
+            "messages": request.messages.iter().map(shared::message_to_json).collect::<Vec<_>>(),
             "stream": true,
             "max_tokens": request.max_tokens,
             "temperature": request.temperature,
+            "tools": request
+                .tools
+                .as_ref()
+                .map(|ts| ts.iter().map(shared::tool_to_json).collect::<Vec<_>>()),
         });
 
-        let response = self
-            .client
-            .post(&url)
-            .header("Authorization", format!("Bearer {token}"))
-            .header("Content-Type", "application/json")
-            .header("Editor-Version", FIREBOX_VERSION)
-            .header("Copilot-Integration-Id", "fire-box")
-            .json(&body)
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let error_text = response.text().await.unwrap_or_default();
-            bail!("Copilot API error: HTTP {} - {}", status, error_text);
-        }
+        let response = shared::check_status(
+            self.client
+                .post(&url)
+                .header("Authorization", format!("Bearer {token}"))
+                .header("Content-Type", "application/json")
+                .header("Editor-Version", FIREBOX_VERSION)
+                .header("Copilot-Integration-Id", "fire-box")
+                .json(&body)
+                .send()
+                .await?,
+        )
+        .await?;
 
         let event_stream = response.bytes_stream();
 
-        let stream = stream::unfold(event_stream, |mut stream| async move {
-            use futures_util::stream::StreamExt;
+        let stream = stream::unfold(
+            (event_stream, Vec::<ToolCall>::new()),
+            |(mut stream, mut pending_tool_calls)| async move {
+                use futures_util::stream::StreamExt;
 
-            while let Some(chunk_result) = stream.next().await {
-                match chunk_result {
-                    Ok(chunk) => {
-                        let text = String::from_utf8_lossy(&chunk);
-                        for line in text.lines() {
-                            let line = line.trim();
-                            if line.is_empty() || !line.starts_with("data: ") {
-                                continue;
-                            }
+                while let Some(chunk_result) = stream.next().await {
+                    match chunk_result {
+                        Ok(chunk) => {
+                            let text = String::from_utf8_lossy(&chunk);
+                            for line in text.lines() {
+                                let data = match shared::sse_data(line) {
+                                    Some(d) => d,
+                                    None => continue,
+                                };
+                                if data == "[DONE]" {
+                                    if !pending_tool_calls.is_empty() {
+                                        let ready = std::mem::take(&mut pending_tool_calls);
+                                        return Some((
+                                            Ok(StreamEvent::ToolCalls { tool_calls: ready }),
+                                            (stream, pending_tool_calls),
+                                        ));
+                                    }
+                                    return Some((
+                                        Ok(StreamEvent::Done),
+                                        (stream, pending_tool_calls),
+                                    ));
+                                }
 
-                            let data = &line[6..];
-                            if data == "[DONE]" {
-                                return Some((Ok(StreamEvent::Done), stream));
-                            }
-
-                            match serde_json::from_str::<serde_json::Value>(data) {
-                                Ok(json) => {
-                                    if let Some(choices) =
-                                        json.get("choices").and_then(|v| v.as_array())
-                                        && let Some(choice) = choices.first()
-                                    {
-                                        if let Some(delta) = choice.get("delta")
-                                            && let Some(content) = delta.get("content")
-                                            && let Some(content_str) = content.as_str()
-                                            && !content_str.is_empty()
+                                match serde_json::from_str::<serde_json::Value>(data) {
+                                    Ok(json) => {
+                                        if let Some(choices) =
+                                            json.get("choices").and_then(|v| v.as_array())
+                                            && let Some(choice) = choices.first()
                                         {
-                                            return Some((
-                                                Ok(StreamEvent::Delta {
-                                                    content: content_str.to_string(),
-                                                }),
-                                                stream,
-                                            ));
-                                        }
-                                        if let Some(finish_reason) = choice.get("finish_reason")
-                                            && finish_reason.is_string()
-                                        {
-                                            return Some((Ok(StreamEvent::Done), stream));
+                                            if let Some(delta) = choice.get("delta")
+                                                && let Some(content) = delta.get("content")
+                                                && let Some(content_str) = content.as_str()
+                                                && !content_str.is_empty()
+                                            {
+                                                return Some((
+                                                    Ok(StreamEvent::Delta {
+                                                        content: content_str.to_string(),
+                                                    }),
+                                                    (stream, pending_tool_calls),
+                                                ));
+                                            }
+                                            if let Some(delta) = choice.get("delta")
+                                                && let Some(tcs) = delta
+                                                    .get("tool_calls")
+                                                    .and_then(|v| v.as_array())
+                                            {
+                                                shared::merge_tool_call_deltas(
+                                                    &mut pending_tool_calls,
+                                                    tcs,
+                                                );
+                                            }
+                                            if let Some(finish_reason) = choice.get("finish_reason")
+                                                && finish_reason.as_str().is_some()
+                                            {
+                                                if !pending_tool_calls.is_empty() {
+                                                    let ready =
+                                                        std::mem::take(&mut pending_tool_calls);
+                                                    return Some((
+                                                        Ok(StreamEvent::ToolCalls {
+                                                            tool_calls: ready,
+                                                        }),
+                                                        (stream, pending_tool_calls),
+                                                    ));
+                                                }
+                                                return Some((
+                                                    Ok(StreamEvent::Done),
+                                                    (stream, pending_tool_calls),
+                                                ));
+                                            }
                                         }
                                     }
-                                }
-                                Err(e) => {
-                                    return Some((
-                                        Err(anyhow::anyhow!("Failed to parse SSE: {}", e)),
-                                        stream,
-                                    ));
+                                    Err(e) => {
+                                        return Some((
+                                            Err(anyhow::anyhow!("Failed to parse SSE: {}", e)),
+                                            (stream, pending_tool_calls),
+                                        ));
+                                    }
                                 }
                             }
                         }
-                    }
-                    Err(e) => {
-                        return Some((Err(anyhow::anyhow!("Stream error: {}", e)), stream));
+                        Err(e) => {
+                            return Some((
+                                Err(anyhow::anyhow!("Stream error: {}", e)),
+                                (stream, pending_tool_calls),
+                            ));
+                        }
                     }
                 }
-            }
 
-            Some((Ok(StreamEvent::Done), stream))
-        });
+                Some((Ok(StreamEvent::Done), (stream, pending_tool_calls)))
+            },
+        );
 
         Ok(Box::pin(stream))
     }
@@ -507,7 +548,10 @@ impl Provider for CopilotProvider {
         _session_id: &str,
         _request: &EmbeddingRequest,
     ) -> Result<EmbeddingResponse> {
-        bail!("Copilot provider: embeddings are not supported by the GitHub Copilot API")
+        Err(crate::providers::ProviderError::RequestFailed(
+            "Copilot provider does not support embeddings".to_string(),
+        )
+        .into())
     }
 
     async fn list_models(&self) -> Result<Vec<RuntimeModelInfo>> {
@@ -528,22 +572,16 @@ impl Provider for CopilotProvider {
         // Copilot uses the OpenAI-compatible API at githubcopilot.com
         let token = self.ensure_copilot_token().await?;
 
-        let response = self
-            .client
-            .get(format!("{}/v1/models", self.endpoint))
-            .header("Authorization", format!("Bearer {token}"))
-            .header("Editor-Version", FIREBOX_VERSION)
-            .header("Copilot-Integration-Id", "fire-box")
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            bail!(
-                "Failed to fetch models: HTTP {} – {}",
-                response.status(),
-                response.text().await.unwrap_or_default()
-            );
-        }
+        let response = shared::check_status(
+            self.client
+                .get(format!("{}/v1/models", self.endpoint))
+                .header("Authorization", format!("Bearer {token}"))
+                .header("Editor-Version", FIREBOX_VERSION)
+                .header("Copilot-Integration-Id", "fire-box")
+                .send()
+                .await?,
+        )
+        .await?;
 
         let model_list: ModelList = response.json().await?;
         Ok(model_list
@@ -592,6 +630,7 @@ mod tests {
             max_tokens: None,
             temperature: None,
             stream: false,
+            tools: None,
         };
         assert!(p.complete("test-session", &req).await.is_err());
     }

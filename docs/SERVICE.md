@@ -86,3 +86,38 @@ The enforcement phase implements the user's decision: if the user approves the r
 ### Data Privacy Protections
 
 The service implements multiple mechanisms to protect user data and maintain privacy. Local processing capabilities, exemplified by the llama.cpp provider, enable entirely offline operation wherein models execute directly on the user's hardware without transmitting data to external services. For cloud-based providers, the service establishes direct connections to provider APIs, ensuring that no traffic traverses third-party relay servers or intermediaries. This architecture minimizes the attack surface and reduces the number of entities with potential access to user data, thereby enhancing overall privacy and security.
+
+## IPC Implementations (Current)
+
+The IPC layer uses platform-native transports with a JSON envelope (`{ "success": bool, "body": ... }`):
+
+- **macOS**: XPC (`xpc_connection_t`) with native dictionary/object values. The `xpc.rs` listener dispatches commands to `nativecore.rs`.
+- **Linux**: D-Bus (`zbus`) with typed method signatures and typed return tuples.
+- **Windows**: COM `LocalServer32` bound to the `FireBoxService` Windows Service. The C# GUI calls `CoCreateInstance(CLSID_FireBoxService)` to obtain an `IFireBoxService` interface and invokes `Invoke(cmd: BSTR, payload: BSTR) -> BSTR` with JSON payloads.
+
+### Windows COM Details
+
+| Item | Value |
+|------|-------|
+| Interface IID | `{3B1A2C4D-5E6F-7A8B-9C0D-EF1234567890}` |
+| Server CLSID | `{4C2B3D5E-6F7A-8B9C-0D1E-F12345678901}` |
+| AppID | same as CLSID — bound via `LocalService = FireBoxService` |
+| Auth level | `RPC_C_AUTHN_LEVEL_PKT_PRIVACY` |
+| Impersonation | `RPC_C_IMP_LEVEL_IMPERSONATE` |
+| Caller identity | `RpcServerInqCallAttributesW(RPC_QUERY_CLIENT_PID)` → `QueryFullProcessImageNameW` |
+
+The COM `Invoke` method is synchronous from the caller's perspective. Internally the service uses a long-lived `tokio` multi-threaded runtime (`GLOBAL_RT`) shared across all COM calls via `block_on`, exactly mirroring the macOS XPC pattern.
+
+Streaming completions over the synchronous `Invoke` interface use a server-side session registry: the client calls `create_stream` to obtain a session ID, then alternates `send_message` / `receive_stream` (long-poll with timeout) calls until `close_stream`.
+
+No JSON-RPC transport is used in the service IPC path.
+
+## Error Handling Strategy
+
+The service applies explicit and consistent error handling across IPC and provider-management paths:
+
+- Fail-fast for persistence operations: provider configuration updates now return errors immediately when index or metadata writes fail.
+- Best-effort rollback for partial state writes in provider registration flows.
+- Structured error responses for IPC operations instead of silent drops.
+- Defensive input handling for IPC transports (for example, maximum frame-size validation for Windows pipe requests).
+- Listener and handler failures are logged with contextual messages to support diagnosis.

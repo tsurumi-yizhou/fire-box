@@ -1,10 +1,12 @@
 pub mod anthropic;
 pub mod config;
+pub mod consts;
 pub mod copilot;
 pub mod dashscope;
 pub mod llamacpp;
 pub mod openai;
 pub mod retry;
+pub mod shared;
 
 // Re-export for convenience
 pub use openai::OpenAiProvider;
@@ -43,11 +45,69 @@ pub enum ProviderError {
 /// A boxed, pinned, sendable stream.
 pub type BoxStream<T> = Pin<Box<dyn Stream<Item = T> + Send>>;
 
+/// Function definition for a tool.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolFunction {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parameters: Option<serde_json::Value>,
+}
+
+/// A tool definition passed to the model.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Tool {
+    #[serde(rename = "type")]
+    pub tool_type: String, // always "function"
+    pub function: ToolFunction,
+}
+
+/// The function invocation part of a tool call.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCallFunction {
+    pub name: String,
+    /// JSON-encoded arguments string.
+    pub arguments: String,
+}
+
+/// A tool call returned by the model.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCall {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub call_type: String, // always "function"
+    pub function: ToolCallFunction,
+}
+
 /// A chat message with a role and content.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub role: String,
+    /// Text content. May be empty when `tool_calls` is present.
     pub content: String,
+    /// Tool calls issued by the model (assistant role only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<ToolCall>>,
+    /// Associates this message with a prior tool call (tool role only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    /// Optional display name (used by some providers).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+impl ChatMessage {
+    /// Convenience constructor for a plain text message.
+    pub fn text(role: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            role: role.into(),
+            content: content.into(),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+        }
+    }
 }
 
 /// Request for a chat completion.
@@ -61,6 +121,9 @@ pub struct CompletionRequest {
     pub temperature: Option<f64>,
     #[serde(default)]
     pub stream: bool,
+    /// Tools available to the model for this request.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<Tool>>,
 }
 
 /// A single completion choice.
@@ -94,6 +157,7 @@ pub struct CompletionResponse {
     pub id: String,
     pub model: String,
     pub choices: Vec<Choice>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<Usage>,
 }
 
@@ -102,6 +166,8 @@ pub struct CompletionResponse {
 pub struct EmbeddingRequest {
     pub model: String,
     pub input: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encoding_format: Option<String>,
 }
 
 /// A single embedding vector.
@@ -124,6 +190,8 @@ pub struct EmbeddingResponse {
 pub enum StreamEvent {
     /// A content delta.
     Delta { content: String },
+    /// Complete tool calls from the model (not delta, always emitted as whole objects).
+    ToolCalls { tool_calls: Vec<ToolCall> },
     /// The stream has finished.
     Done,
     /// An error occurred.
@@ -259,13 +327,11 @@ mod tests {
     fn serialize_completion_request() {
         let request = CompletionRequest {
             model: "gpt-4".to_string(),
-            messages: vec![ChatMessage {
-                role: "user".to_string(),
-                content: "Hello".to_string(),
-            }],
+            messages: vec![ChatMessage::text("user", "Hello")],
             max_tokens: Some(100),
             temperature: None,
             stream: false,
+            tools: None,
         };
         let json = serde_json::to_string(&request).unwrap();
         assert!(json.contains("gpt-4"));
@@ -298,6 +364,7 @@ mod tests {
         let request = EmbeddingRequest {
             model: "text-embedding-ada-002".to_string(),
             input: vec!["hello world".to_string()],
+            encoding_format: None,
         };
         let json = serde_json::to_string(&request).unwrap();
         assert!(json.contains("text-embedding-ada-002"));
@@ -313,6 +380,21 @@ mod tests {
 
         let err = ProviderError::ModelNotFound("unknown".to_string());
         assert_eq!(err.to_string(), "model not found: unknown");
+    }
+
+    #[test]
+    fn tool_call_roundtrip() {
+        let tool = Tool {
+            tool_type: "function".to_string(),
+            function: ToolFunction {
+                name: "get_weather".to_string(),
+                description: Some("Get current weather".to_string()),
+                parameters: Some(serde_json::json!({"type": "object"})),
+            },
+        };
+        let json = serde_json::to_string(&tool).unwrap();
+        let restored: Tool = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.function.name, "get_weather");
     }
 
     // -----------------------------------------------------------------------
@@ -333,10 +415,7 @@ mod tests {
                 model: request.model.clone(),
                 choices: vec![Choice {
                     index: 0,
-                    message: ChatMessage {
-                        role: "assistant".to_string(),
-                        content: "mock response".to_string(),
-                    },
+                    message: ChatMessage::text("assistant", "mock response"),
                     finish_reason: Some("stop".to_string()),
                 }],
                 usage: Some(Usage {
@@ -369,13 +448,11 @@ mod tests {
         let provider = MockProvider;
         let req = CompletionRequest {
             model: "test-model".to_string(),
-            messages: vec![ChatMessage {
-                role: "user".to_string(),
-                content: "Hello".to_string(),
-            }],
+            messages: vec![ChatMessage::text("user", "Hello")],
             max_tokens: None,
             temperature: None,
             stream: false,
+            tools: None,
         };
 
         let resp = provider.complete("session-1", &req).await.unwrap();
@@ -392,6 +469,7 @@ mod tests {
             max_tokens: None,
             temperature: None,
             stream: false,
+            tools: None,
         };
         // Different session IDs should all work – the mock ignores them.
         assert!(provider.complete("s1", &req).await.is_ok());

@@ -2,7 +2,7 @@
 
 use firebox_service::providers::{
     BoxStream, ChatMessage, CompletionRequest, CompletionResponse, EmbeddingRequest,
-    EmbeddingResponse, Provider, ProviderDyn, ProviderError, StreamEvent, Usage,
+    EmbeddingResponse, Provider, ProviderDyn, ProviderError, RuntimeModelInfo, StreamEvent, Usage,
 };
 
 /// Mock provider for testing the Provider trait
@@ -56,6 +56,9 @@ impl Provider for MockProvider {
                 message: ChatMessage {
                     role: "assistant".to_string(),
                     content: format!("Mock response for: {}", request.model),
+                    tool_calls: None,
+                    tool_call_id: None,
+                    name: None,
                 },
                 finish_reason: Some("stop".to_string()),
             }],
@@ -117,13 +120,23 @@ impl Provider for MockProvider {
         })
     }
 
-    async fn list_models(&self) -> anyhow::Result<Vec<String>> {
+    async fn list_models(&self) -> anyhow::Result<Vec<RuntimeModelInfo>> {
         if self.should_fail {
             anyhow::bail!("Cannot list models");
         }
         Ok(vec![
-            "mock-model-v1".to_string(),
-            "mock-model-v2".to_string(),
+            RuntimeModelInfo {
+                id: "mock-model-v1".to_string(),
+                owner: "mock".to_string(),
+                created: None,
+                context_window: None,
+            },
+            RuntimeModelInfo {
+                id: "mock-model-v2".to_string(),
+                owner: "mock".to_string(),
+                created: None,
+                context_window: None,
+            },
         ])
     }
 }
@@ -136,10 +149,14 @@ async fn mock_provider_complete_basic() {
         messages: vec![ChatMessage {
             role: "user".to_string(),
             content: "Hello".to_string(),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
         }],
         max_tokens: None,
         temperature: None,
         stream: false,
+        tools: None,
     };
 
     let response = provider.complete("session-1", &request).await.unwrap();
@@ -157,6 +174,7 @@ async fn mock_provider_complete_failing() {
         max_tokens: None,
         temperature: None,
         stream: false,
+        tools: None,
     };
 
     let result = provider.complete("session-1", &request).await;
@@ -177,10 +195,14 @@ async fn mock_provider_complete_stream() {
         messages: vec![ChatMessage {
             role: "user".to_string(),
             content: "Stream me".to_string(),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
         }],
         max_tokens: None,
         temperature: None,
         stream: true,
+        tools: None,
     };
 
     let stream = provider
@@ -212,6 +234,7 @@ async fn mock_provider_complete_stream_not_supported() {
         max_tokens: None,
         temperature: None,
         stream: true,
+        tools: None,
     };
 
     let result = provider.complete_stream("session-1", &request).await;
@@ -229,6 +252,7 @@ async fn mock_provider_embed() {
     let request = EmbeddingRequest {
         model: "embed-model".to_string(),
         input: vec!["hello".to_string(), "world".to_string()],
+        encoding_format: None,
     };
 
     let response = provider.embed("session-1", &request).await.unwrap();
@@ -244,6 +268,7 @@ async fn mock_provider_embed_not_supported() {
     let request = EmbeddingRequest {
         model: "embed-model".to_string(),
         input: vec!["hello".to_string()],
+        encoding_format: None,
     };
 
     let result = provider.embed("session-1", &request).await;
@@ -255,8 +280,8 @@ async fn mock_provider_list_models() {
     let provider = MockProvider::new();
     let models = provider.list_models().await.unwrap();
     assert_eq!(models.len(), 2);
-    assert!(models.contains(&"mock-model-v1".to_string()));
-    assert!(models.contains(&"mock-model-v2".to_string()));
+    assert!(models.iter().any(|m| m.id == "mock-model-v1"));
+    assert!(models.iter().any(|m| m.id == "mock-model-v2"));
 }
 
 #[tokio::test]
@@ -275,6 +300,7 @@ async fn provider_dyn_complete() {
         max_tokens: None,
         temperature: None,
         stream: false,
+        tools: None,
     };
 
     // Use the dyn wrapper
@@ -295,6 +321,7 @@ async fn provider_dyn_complete_stream() {
         max_tokens: None,
         temperature: None,
         stream: true,
+        tools: None,
     };
 
     let dyn_provider: &dyn ProviderDyn = &provider;
@@ -314,6 +341,7 @@ async fn provider_dyn_embed() {
     let request = EmbeddingRequest {
         model: "dyn-embed".to_string(),
         input: vec!["test".to_string()],
+        encoding_format: None,
     };
 
     let dyn_provider: &dyn ProviderDyn = &provider;
@@ -344,6 +372,7 @@ async fn complete_with_empty_messages() {
         max_tokens: None,
         temperature: None,
         stream: false,
+        tools: None,
     };
 
     let response = provider.complete("session-1", &request).await.unwrap();
@@ -359,15 +388,22 @@ async fn complete_with_system_message() {
             ChatMessage {
                 role: "system".to_string(),
                 content: "Be helpful".to_string(),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
             },
             ChatMessage {
                 role: "user".to_string(),
                 content: "Hi".to_string(),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
             },
         ],
         max_tokens: None,
         temperature: None,
         stream: false,
+        tools: None,
     };
 
     let response = provider.complete("session-1", &request).await.unwrap();
@@ -380,6 +416,7 @@ async fn embed_with_single_input() {
     let request = EmbeddingRequest {
         model: "embed".to_string(),
         input: vec!["single".to_string()],
+        encoding_format: None,
     };
 
     let response = provider.embed("session-1", &request).await.unwrap();
@@ -393,6 +430,7 @@ async fn embed_with_empty_input() {
     let request = EmbeddingRequest {
         model: "embed".to_string(),
         input: vec![],
+        encoding_format: None,
     };
 
     let response = provider.embed("session-1", &request).await.unwrap();
@@ -408,6 +446,7 @@ async fn session_id_in_response() {
         max_tokens: None,
         temperature: None,
         stream: false,
+        tools: None,
     };
 
     let response1 = provider

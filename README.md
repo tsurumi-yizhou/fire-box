@@ -14,7 +14,7 @@ A high-performance, cross-platform AI gateway written in Rust. It supports multi
 - **Rust** 1.70 or later (with cargo)
 - **Platform-specific:**
   - macOS: Xcode Command Line Tools, Swift 6.1+
-  - Windows: Visual Studio 2019+ or MSVC build tools
+  - Windows: Visual Studio 2019+ or MSVC build tools, WiX Toolset (for MSI packaging)
   - Linux: GCC/Clang, pkg-config
 
 ### Runtime Dependencies
@@ -54,7 +54,7 @@ sudo installer -pkg FireBox-1.1.0-macOS.pkg -target /
 **Windows:**
 ```powershell
 # Run the generated installer
-.\FireBox-1.1.0-Windows.exe
+.\FireBox-1.1.0-Windows.msi
 ```
 
 **Linux:**
@@ -72,3 +72,16 @@ firebox://add-provider?type=openai&name=OpenAI&config=eyJiYXNlX3VybCI6Imh0dHBzOi
 ```
 
 The application will prompt for confirmation before adding the provider.
+
+## IPC Status (Service)
+
+- `macOS`: native XPC with native dictionary serialization.
+- `Linux`: native D-Bus service interface (`zbus`) with typed method signatures.
+- `Windows`: native Named Pipe transport with length-prefixed binary frames (`bincode`), not JSON payloads.
+
+## Error Handling Policy
+
+- Provider registration flows fail fast and now roll back partial writes (provider config / provider index / metadata) on failure.
+- IPC handlers return explicit structured errors instead of silently ignoring persistence failures.
+- Windows pipe server enforces a max frame size to prevent unbounded memory allocation on malformed input.
+- IPC listener task failures are logged with context for operational diagnosis.

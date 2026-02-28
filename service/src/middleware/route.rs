@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use anyhow::{Result, Context};
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{OnceCell, RwLock};
 
@@ -60,9 +60,22 @@ pub struct RouteMetadata {
     pub description: Option<String>,
 }
 
+/// Routing strategy for a virtual model.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum RouteStrategy {
+    /// Try targets in order; fall over to the next on failure.
+    #[default]
+    Failover,
+    /// Pick a random target for each request.
+    Random,
+}
+
 /// A route rule: defines a virtual model and its required capability contract, mapping to targets.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RouteRule {
+    #[serde(default)]
+    pub alias: String,
     pub virtual_model_id: String,
     #[serde(default)]
     pub display_name: String,
@@ -71,6 +84,8 @@ pub struct RouteRule {
     #[serde(default)]
     pub metadata: RouteMetadata,
     pub targets: Vec<RouteTarget>,
+    #[serde(default)]
+    pub strategy: RouteStrategy,
 }
 
 /// Model enabled state per provider.
@@ -84,6 +99,13 @@ pub struct ModelEnabledState {
 // Uses OnceCell for thread-safe lazy async initialization
 static ROUTE_DATA: OnceCell<RwLock<RouteData>> = OnceCell::const_new();
 
+/// Get the route data lock, returning an error if not yet initialized.
+fn route_data() -> Result<&'static RwLock<RouteData>> {
+    ROUTE_DATA
+        .get()
+        .ok_or_else(|| anyhow::anyhow!("ROUTE_DATA not initialized"))
+}
+
 /// Ensure route data is initialized, loading from store if necessary.
 /// This is called automatically by all public functions.
 async fn ensure_initialized() {
@@ -96,27 +118,35 @@ async fn ensure_initialized() {
                         match serde_json::from_str::<serde_json::Value>(&json) {
                             Ok(mut val) => {
                                 // Migration: handle older format with 'alias' instead of 'virtual_model_id'
-                                if let Some(obj) = val.as_object_mut() {
-                                    if !obj.contains_key("virtual_model_id") && obj.contains_key("alias") {
-                                        let alias_val = obj.remove("alias").unwrap();
-                                        obj.insert("virtual_model_id".to_string(), alias_val.clone());
-                                        if !obj.contains_key("display_name") {
-                                            obj.insert("display_name".to_string(), alias_val);
-                                        }
+                                if let Some(obj) = val.as_object_mut()
+                                    && !obj.contains_key("virtual_model_id")
+                                    && obj.contains_key("alias")
+                                    && let Some(alias_val) = obj.remove("alias")
+                                {
+                                    obj.insert("virtual_model_id".to_string(), alias_val.clone());
+                                    if !obj.contains_key("display_name") {
+                                        obj.insert("display_name".to_string(), alias_val);
                                     }
                                 }
-                                
+
                                 match serde_json::from_value::<RouteRule>(val) {
-                                    Ok(rule) => {
+                                    Ok(mut rule) => {
+                                        if rule.alias.is_empty() {
+                                            rule.alias = rule.virtual_model_id.clone();
+                                        }
                                         rules.insert(alias, rule);
                                     }
                                     Err(e) => {
-                                        log::warn!("Failed to map route rule for alias '{}': {}", alias, e);
+                                        tracing::warn!(
+                                            "Failed to map route rule for alias '{}': {}",
+                                            alias,
+                                            e
+                                        );
                                     }
                                 }
                             }
                             Err(e) => {
-                                log::warn!(
+                                tracing::warn!(
                                     "Failed to parse route rule JSON for alias '{}': {}",
                                     alias,
                                     e
@@ -131,7 +161,7 @@ async fn ensure_initialized() {
                     }
                 }
                 Err(e) => {
-                    log::warn!("Failed to load route data from store: {}", e);
+                    tracing::warn!("Failed to load route data from store: {}", e);
                     RouteData::default()
                 }
             };
@@ -152,18 +182,36 @@ struct RouteData {
 // Route rules management
 // ---------------------------------------------------------------------------
 
+/// Set route rules for a specific virtual model using default metadata and strategy.
+///
+/// This is a compatibility helper retained for older call sites.
+pub async fn set_route_rules(virtual_model_id: &str, targets: Vec<RouteTarget>) -> Result<()> {
+    set_route_rules_with_options(
+        virtual_model_id,
+        virtual_model_id,
+        RouteCapabilities::default(),
+        RouteMetadata::default(),
+        targets,
+        RouteStrategy::default(),
+    )
+    .await
+}
+
 /// Set route rules for a specific virtual model.
-pub async fn set_route_rules(
+pub async fn set_route_rules_with_options(
     virtual_model_id: &str,
     display_name: &str,
     capabilities: RouteCapabilities,
     metadata: RouteMetadata,
     targets: Vec<RouteTarget>,
+    strategy: RouteStrategy,
 ) -> Result<()> {
     // Validate capabilities against models.dev data
     let mut manager = MetadataManager::new();
-    // Try to pre-load metadata, ignore failure to allow offline operation
-    let _ = manager.get().await;
+    // Pre-load metadata; failure is non-fatal (allows offline operation).
+    if let Err(e) = manager.get().await {
+        tracing::debug!("Metadata pre-load skipped (offline?): {e}");
+    }
 
     for target in &targets {
         manager
@@ -184,15 +232,17 @@ pub async fn set_route_rules(
 
     ensure_initialized().await;
     {
-        let lock = ROUTE_DATA.get().expect("ROUTE_DATA should be initialized");
+        let lock = route_data()?;
         let mut data = lock.write().await;
 
         let rule = RouteRule {
+            alias: virtual_model_id.to_string(),
             virtual_model_id: virtual_model_id.to_string(),
             display_name: display_name.to_string(),
             capabilities,
             metadata,
             targets,
+            strategy,
         };
         data.rules.insert(virtual_model_id.to_string(), rule);
     } // Drop lock before persisting
@@ -222,7 +272,7 @@ pub async fn get_all_rules() -> Result<Vec<RouteRule>> {
 pub async fn delete_route_rules(alias: &str) -> Result<()> {
     ensure_initialized().await;
     {
-        let lock = ROUTE_DATA.get().expect("ROUTE_DATA should be initialized");
+        let lock = route_data()?;
         let mut data = lock.write().await;
         data.rules.remove(alias);
     } // Drop lock
@@ -296,7 +346,7 @@ pub async fn load_enabled_models(provider_id: &str) -> Option<Vec<String>> {
 pub async fn save_enabled_models(provider_id: &str, models: &[String]) -> Result<()> {
     ensure_initialized().await;
     {
-        let lock = ROUTE_DATA.get().expect("ROUTE_DATA should be initialized");
+        let lock = route_data()?;
         let mut data = lock.write().await;
         data.enabled_models
             .insert(provider_id.to_string(), models.to_vec());
@@ -344,19 +394,14 @@ pub async fn list_enabled_models(provider_id: &str, all_models: &[String]) -> Ve
 /// Persist route data to store.
 async fn persist() -> Result<()> {
     let (rules_map, enabled_models) = {
-        let lock = ROUTE_DATA.get().expect("ROUTE_DATA should be initialized");
+        let lock = route_data()?;
         let data = lock.read().await;
 
         // Serialize rules to JSON strings
         let rules_map: HashMap<String, String> = data
             .rules
             .iter()
-            .map(|(id, rule)| {
-                (
-                    id.clone(),
-                    serde_json::to_string(rule).unwrap_or_default(),
-                )
-            })
+            .map(|(id, rule)| (id.clone(), serde_json::to_string(rule).unwrap_or_default()))
             .collect();
 
         (rules_map, data.enabled_models.clone())
@@ -404,7 +449,16 @@ mod tests {
                 model_id: "claude-3".to_string(),
             },
         ];
-        set_route_rules("my-model", targets).await.unwrap();
+        set_route_rules_with_options(
+            "my-model",
+            "My Model",
+            RouteCapabilities::default(),
+            RouteMetadata::default(),
+            targets,
+            RouteStrategy::default(),
+        )
+        .await
+        .unwrap();
 
         let result = resolve_alias("my-model").await.unwrap();
         assert_eq!(result, ("openai".to_string(), "gpt-4".to_string()));
@@ -423,7 +477,16 @@ mod tests {
                 model_id: "claude-3".to_string(),
             },
         ];
-        set_route_rules("my-model", targets).await.unwrap();
+        set_route_rules_with_options(
+            "my-model",
+            "My Model",
+            RouteCapabilities::default(),
+            RouteMetadata::default(),
+            targets,
+            RouteStrategy::default(),
+        )
+        .await
+        .unwrap();
 
         let next = get_next_target("my-model", "openai").await.unwrap();
         assert_eq!(

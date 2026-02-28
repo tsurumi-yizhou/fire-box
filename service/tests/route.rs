@@ -6,6 +6,18 @@ use firebox_service::middleware::route::{
     save_enabled_models, set_route_rules, toggle_model,
 };
 
+fn make_rule(alias: &str, targets: Vec<RouteTarget>) -> RouteRule {
+    RouteRule {
+        alias: alias.to_string(),
+        virtual_model_id: alias.to_string(),
+        display_name: alias.to_string(),
+        capabilities: Default::default(),
+        metadata: Default::default(),
+        targets,
+        strategy: Default::default(),
+    }
+}
+
 // RouteTarget tests
 #[test]
 fn route_target_basic() {
@@ -71,13 +83,13 @@ fn route_target_same_provider_different_models() {
 // RouteRule tests
 #[test]
 fn route_rule_single_target() {
-    let rule = RouteRule {
-        alias: "smart-model".to_string(),
-        targets: vec![RouteTarget {
+    let rule = make_rule(
+        "smart-model",
+        vec![RouteTarget {
             provider_id: "openai".to_string(),
             model_id: "gpt-4".to_string(),
         }],
-    };
+    );
 
     assert_eq!(rule.alias, "smart-model");
     assert_eq!(rule.targets.len(), 1);
@@ -85,9 +97,9 @@ fn route_rule_single_target() {
 
 #[test]
 fn route_rule_multiple_targets() {
-    let rule = RouteRule {
-        alias: "failover-model".to_string(),
-        targets: vec![
+    let rule = make_rule(
+        "failover-model",
+        vec![
             RouteTarget {
                 provider_id: "openai".to_string(),
                 model_id: "gpt-4".to_string(),
@@ -101,7 +113,7 @@ fn route_rule_multiple_targets() {
                 model_id: "qwen-max".to_string(),
             },
         ],
-    };
+    );
 
     assert_eq!(rule.targets.len(), 3);
     assert_eq!(rule.targets[0].provider_id, "openai");
@@ -111,13 +123,13 @@ fn route_rule_multiple_targets() {
 
 #[test]
 fn route_rule_clone() {
-    let rule = RouteRule {
-        alias: "clone-rule".to_string(),
-        targets: vec![RouteTarget {
+    let rule = make_rule(
+        "clone-rule",
+        vec![RouteTarget {
             provider_id: "openai".to_string(),
             model_id: "gpt-4".to_string(),
         }],
-    };
+    );
 
     let cloned = rule.clone();
     assert_eq!(rule.alias, cloned.alias);
@@ -126,10 +138,7 @@ fn route_rule_clone() {
 
 #[test]
 fn route_rule_debug() {
-    let rule = RouteRule {
-        alias: "debug-rule".to_string(),
-        targets: vec![],
-    };
+    let rule = make_rule("debug-rule", vec![]);
 
     let debug_str = format!("{:?}", rule);
     assert!(debug_str.contains("debug-rule"));
@@ -137,10 +146,7 @@ fn route_rule_debug() {
 
 #[test]
 fn route_rule_empty_targets() {
-    let rule = RouteRule {
-        alias: "empty-rule".to_string(),
-        targets: vec![],
-    };
+    let rule = make_rule("empty-rule", vec![]);
 
     assert!(rule.targets.is_empty());
 }
@@ -418,10 +424,10 @@ async fn get_next_target_three_providers() {
 #[tokio::test]
 async fn save_and_load_enabled_models() {
     let models = vec!["gpt-4".to_string(), "gpt-3.5".to_string()];
-    let result = save_enabled_models("openai", &models).await;
+    let result = save_enabled_models("test-save-load", &models).await;
     assert!(result.is_ok());
 
-    let loaded = load_enabled_models("openai").await;
+    let loaded = load_enabled_models("test-save-load").await;
     assert!(loaded.is_some());
     let loaded_models = loaded.unwrap();
     assert_eq!(loaded_models.len(), 2);
@@ -435,19 +441,19 @@ async fn load_nonexistent_enabled_models() {
 
 #[tokio::test]
 async fn is_model_enabled_default() {
-    // When no state is saved, all models should be enabled
-    assert!(is_model_enabled("openai", "gpt-4").await);
-    assert!(is_model_enabled("openai", "any-model").await);
+    // Use a unique provider ID to avoid state pollution from other tests
+    assert!(is_model_enabled("test-default-provider", "gpt-4").await);
+    assert!(is_model_enabled("test-default-provider", "any-model").await);
 }
 
 #[tokio::test]
 async fn is_model_enabled_with_specific_models() {
-    save_enabled_models("openai", &["gpt-4".to_string()])
+    save_enabled_models("test-specific-provider", &["gpt-4".to_string()])
         .await
         .unwrap();
 
-    assert!(is_model_enabled("openai", "gpt-4").await);
-    assert!(!is_model_enabled("openai", "gpt-3.5").await);
+    assert!(is_model_enabled("test-specific-provider", "gpt-4").await);
+    assert!(!is_model_enabled("test-specific-provider", "gpt-3.5").await);
 }
 
 #[tokio::test]
@@ -455,15 +461,17 @@ async fn toggle_model_enable() {
     let all_models = vec!["gpt-4".to_string(), "gpt-3.5".to_string()];
 
     // Start with none enabled
-    save_enabled_models("openai", &[]).await.unwrap();
-
-    // Enable gpt-4
-    toggle_model("openai", "gpt-4", true, &all_models)
+    save_enabled_models("test-toggle-enable", &[])
         .await
         .unwrap();
 
-    assert!(is_model_enabled("openai", "gpt-4").await);
-    assert!(!is_model_enabled("openai", "gpt-3.5").await);
+    // Enable gpt-4
+    toggle_model("test-toggle-enable", "gpt-4", true, &all_models)
+        .await
+        .unwrap();
+
+    assert!(is_model_enabled("test-toggle-enable", "gpt-4").await);
+    assert!(!is_model_enabled("test-toggle-enable", "gpt-3.5").await);
 }
 
 #[tokio::test]
@@ -471,15 +479,17 @@ async fn toggle_model_disable() {
     let all_models = vec!["gpt-4".to_string(), "gpt-3.5".to_string()];
 
     // Start with both enabled
-    save_enabled_models("openai", &all_models).await.unwrap();
-
-    // Disable gpt-3.5
-    toggle_model("openai", "gpt-3.5", false, &all_models)
+    save_enabled_models("test-toggle-disable", &all_models)
         .await
         .unwrap();
 
-    assert!(is_model_enabled("openai", "gpt-4").await);
-    assert!(!is_model_enabled("openai", "gpt-3.5").await);
+    // Disable gpt-3.5
+    toggle_model("test-toggle-disable", "gpt-3.5", false, &all_models)
+        .await
+        .unwrap();
+
+    assert!(is_model_enabled("test-toggle-disable", "gpt-4").await);
+    assert!(!is_model_enabled("test-toggle-disable", "gpt-3.5").await);
 }
 
 #[tokio::test]
@@ -487,7 +497,7 @@ async fn list_enabled_models_all() {
     let all_models = vec!["gpt-4".to_string(), "gpt-3.5".to_string()];
 
     // None saved means all enabled
-    let enabled = list_enabled_models("openai", &all_models).await;
+    let enabled = list_enabled_models("test-list-all", &all_models).await;
     assert_eq!(enabled.len(), 2);
 }
 
@@ -500,11 +510,11 @@ async fn list_enabled_models_specific() {
     ];
     let enabled_models = vec!["gpt-4".to_string(), "gpt-4-turbo".to_string()];
 
-    save_enabled_models("openai", &enabled_models)
+    save_enabled_models("test-list-provider", &enabled_models)
         .await
         .unwrap();
 
-    let enabled = list_enabled_models("openai", &all_models).await;
+    let enabled = list_enabled_models("test-list-provider", &all_models).await;
     assert_eq!(enabled.len(), 2);
     assert!(enabled.contains(&"gpt-4".to_string()));
     assert!(enabled.contains(&"gpt-4-turbo".to_string()));
@@ -515,17 +525,17 @@ async fn toggle_model_add_new() {
     let all_models = vec!["gpt-4".to_string(), "new-model".to_string()];
 
     // Start with only gpt-4
-    save_enabled_models("openai", &["gpt-4".to_string()])
+    save_enabled_models("test-toggle-add", &["gpt-4".to_string()])
         .await
         .unwrap();
 
     // Enable new model
-    toggle_model("openai", "new-model", true, &all_models)
+    toggle_model("test-toggle-add", "new-model", true, &all_models)
         .await
         .unwrap();
 
-    assert!(is_model_enabled("openai", "gpt-4").await);
-    assert!(is_model_enabled("openai", "new-model").await);
+    assert!(is_model_enabled("test-toggle-add", "gpt-4").await);
+    assert!(is_model_enabled("test-toggle-add", "new-model").await);
 }
 
 #[tokio::test]
@@ -533,16 +543,16 @@ async fn toggle_model_disable_last_one() {
     let all_models = vec!["only-model".to_string()];
 
     // Start with only model enabled
-    save_enabled_models("openai", &["only-model".to_string()])
+    save_enabled_models("test-toggle-last", &["only-model".to_string()])
         .await
         .unwrap();
 
     // Disable it
-    toggle_model("openai", "only-model", false, &all_models)
+    toggle_model("test-toggle-last", "only-model", false, &all_models)
         .await
         .unwrap();
 
-    assert!(!is_model_enabled("openai", "only-model").await);
+    assert!(!is_model_enabled("test-toggle-last", "only-model").await);
 }
 
 // Edge cases
@@ -558,10 +568,7 @@ fn route_target_empty_strings() {
 
 #[test]
 fn route_rule_unicode_alias() {
-    let rule = RouteRule {
-        alias: "智能模型".to_string(),
-        targets: vec![],
-    };
+    let rule = make_rule("智能模型", vec![]);
     assert_eq!(rule.alias, "智能模型");
 }
 
@@ -585,20 +592,17 @@ fn many_targets_in_rule() {
         });
     }
 
-    let rule = RouteRule {
-        alias: "many-targets".to_string(),
-        targets,
-    };
+    let rule = make_rule("many-targets", targets);
 
     assert_eq!(rule.targets.len(), 50);
 }
 
 #[tokio::test]
 async fn enabled_models_empty_list() {
-    save_enabled_models("openai", &[]).await.unwrap();
+    save_enabled_models("test-empty-list", &[]).await.unwrap();
 
     // Empty list means none enabled
-    assert!(!is_model_enabled("openai", "any-model").await);
+    assert!(!is_model_enabled("test-empty-list", "any-model").await);
 }
 
 #[tokio::test]

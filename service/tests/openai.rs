@@ -3,10 +3,13 @@
 use firebox_service::providers::openai::OpenAiProvider;
 use firebox_service::providers::{ChatMessage, CompletionRequest, EmbeddingRequest, Provider};
 
+const DEFAULT_URL: &str = "https://api.openai.com/v1";
+
 #[test]
 fn create_with_default_url() {
-    let provider = OpenAiProvider::new("sk-test-key".to_string());
-    assert_eq!(provider.base_url(), "https://api.openai.com/v1");
+    let provider =
+        OpenAiProvider::with_base_url(Some("sk-test-key".to_string()), DEFAULT_URL.to_string());
+    assert_eq!(provider.base_url(), DEFAULT_URL);
 }
 
 #[test]
@@ -38,9 +41,10 @@ fn create_vllm_without_key() {
 
 #[test]
 fn base_url_is_immutable() {
-    let provider = OpenAiProvider::new("sk-test".to_string());
+    let provider =
+        OpenAiProvider::with_base_url(Some("sk-test".to_string()), DEFAULT_URL.to_string());
     let url = provider.base_url();
-    assert_eq!(url, "https://api.openai.com/v1");
+    assert_eq!(url, DEFAULT_URL);
 }
 
 #[test]
@@ -66,7 +70,8 @@ fn vllm_is_local() {
 
 #[test]
 fn openai_is_https() {
-    let provider = OpenAiProvider::new("sk-test".to_string());
+    let provider =
+        OpenAiProvider::with_base_url(Some("sk-test".to_string()), DEFAULT_URL.to_string());
     assert!(provider.base_url().starts_with("https://"));
 }
 
@@ -81,7 +86,7 @@ fn provider_with_empty_api_key() {
 
 #[test]
 fn different_providers_different_urls() {
-    let openai = OpenAiProvider::new("key".to_string());
+    let openai = OpenAiProvider::with_base_url(Some("key".to_string()), DEFAULT_URL.to_string());
     let ollama = OpenAiProvider::ollama();
     let vllm = OpenAiProvider::vllm(None);
 
@@ -106,15 +111,18 @@ fn provider_url_formats() {
 
 #[test]
 fn provider_with_special_characters_in_key() {
-    let provider = OpenAiProvider::new("sk-test_特殊文字 -🔑".to_string());
-    assert_eq!(provider.base_url(), "https://api.openai.com/v1");
+    let provider = OpenAiProvider::with_base_url(
+        Some("sk-test_特殊文字 -🔑".to_string()),
+        DEFAULT_URL.to_string(),
+    );
+    assert_eq!(provider.base_url(), DEFAULT_URL);
 }
 
 #[test]
 fn provider_with_long_api_key() {
     let long_key = "sk-".to_string() + &"a".repeat(100);
-    let provider = OpenAiProvider::new(long_key);
-    assert_eq!(provider.base_url(), "https://api.openai.com/v1");
+    let provider = OpenAiProvider::with_base_url(Some(long_key), DEFAULT_URL.to_string());
+    assert_eq!(provider.base_url(), DEFAULT_URL);
 }
 
 // Request structure tests
@@ -125,10 +133,14 @@ fn request_with_single_message() {
         messages: vec![ChatMessage {
             role: "user".to_string(),
             content: "Hello".to_string(),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
         }],
         max_tokens: Some(100),
         temperature: Some(0.7),
         stream: false,
+        tools: None,
     };
 
     assert_eq!(request.model, "gpt-4");
@@ -144,15 +156,22 @@ fn request_with_multiple_messages() {
             ChatMessage {
                 role: "system".to_string(),
                 content: "You are helpful".to_string(),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
             },
             ChatMessage {
                 role: "user".to_string(),
                 content: "Hi".to_string(),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
             },
         ],
         max_tokens: None,
         temperature: None,
         stream: false,
+        tools: None,
     };
 
     assert_eq!(request.messages.len(), 2);
@@ -163,6 +182,7 @@ fn embedding_request_format() {
     let request = EmbeddingRequest {
         model: "text-embedding-ada-002".to_string(),
         input: vec!["hello world".to_string()],
+        encoding_format: None,
     };
 
     assert_eq!(request.model, "text-embedding-ada-002");
@@ -178,6 +198,7 @@ fn embedding_request_multiple_inputs() {
             "second".to_string(),
             "third".to_string(),
         ],
+        encoding_format: None,
     };
 
     assert_eq!(request.input.len(), 3);
@@ -186,16 +207,21 @@ fn embedding_request_multiple_inputs() {
 // Integration-style tests
 #[tokio::test]
 async fn complete_without_network_should_fail() {
-    let provider = OpenAiProvider::new("invalid-key".to_string());
+    let provider =
+        OpenAiProvider::with_base_url(Some("invalid-key".to_string()), DEFAULT_URL.to_string());
     let request = CompletionRequest {
         model: "gpt-4".to_string(),
         messages: vec![ChatMessage {
             role: "user".to_string(),
             content: "Test".to_string(),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
         }],
         max_tokens: None,
         temperature: None,
         stream: false,
+        tools: None,
     };
 
     let result = provider.complete("test-session", &request).await;
@@ -204,13 +230,15 @@ async fn complete_without_network_should_fail() {
 
 #[tokio::test]
 async fn complete_stream_without_network_should_fail() {
-    let provider = OpenAiProvider::new("invalid-key".to_string());
+    let provider =
+        OpenAiProvider::with_base_url(Some("invalid-key".to_string()), DEFAULT_URL.to_string());
     let request = CompletionRequest {
         model: "gpt-4".to_string(),
         messages: vec![],
         max_tokens: None,
         temperature: None,
         stream: true,
+        tools: None,
     };
 
     let result = provider.complete_stream("test-session", &request).await;
@@ -219,10 +247,12 @@ async fn complete_stream_without_network_should_fail() {
 
 #[tokio::test]
 async fn embed_without_network_should_fail() {
-    let provider = OpenAiProvider::new("invalid-key".to_string());
+    let provider =
+        OpenAiProvider::with_base_url(Some("invalid-key".to_string()), DEFAULT_URL.to_string());
     let request = EmbeddingRequest {
         model: "text-embedding-ada-002".to_string(),
         input: vec!["test".to_string()],
+        encoding_format: None,
     };
 
     let result = provider.embed("test-session", &request).await;
@@ -231,7 +261,8 @@ async fn embed_without_network_should_fail() {
 
 #[tokio::test]
 async fn list_models_without_network_should_fail() {
-    let provider = OpenAiProvider::new("invalid-key".to_string());
+    let provider =
+        OpenAiProvider::with_base_url(Some("invalid-key".to_string()), DEFAULT_URL.to_string());
     let _result = provider.list_models().await;
     // May fail or return empty list depending on implementation
 }

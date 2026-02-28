@@ -23,7 +23,7 @@ struct SidebarView: View {
             Label(tab.rawValue, systemImage: tab.icon)
                 .tag(tab)
         }
-        .navigationTitle("Firebox")
+        .navigationTitle("FireBox")
         .frame(minWidth: 200)
     }
 }
@@ -38,10 +38,12 @@ struct DetailView: View {
                 DashboardView()
             case .connections:
                 ConnectionsView()
-            case .models:
-                ModelsView()
             case .providers:
                 ProvidersView()
+            case .routes:
+                RoutesView()
+            case .allowlist:
+                AllowlistView()
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

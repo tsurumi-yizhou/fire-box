@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 4.00)
-project(FireBox VERSION 1.1.0)
+project(FireBox VERSION 1.1.1)
 
 set(CPACK_PACKAGE_NAME "FireBox")
 set(CPACK_PACKAGE_VENDOR "FireBox")
@@ -9,10 +9,9 @@ set(CPACK_PACKAGE_INSTALL_DIRECTORY "FireBox")
 set(CPACK_PACKAGE_FILE_NAME "FireBox-${PROJECT_VERSION}")
 
 if(WIN32)
-    set(CPACK_GENERATOR "NSIS")
-    set(CPACK_NSIS_DISPLAY_NAME "FireBox")
-    set(CPACK_NSIS_PACKAGE_NAME "FireBox")
-    set(CPACK_NSIS_ENABLE_UNINSTALL_BEFORE_INSTALL ON)
+    set(CPACK_GENERATOR "WIX")
+    set(CPACK_WIX_VERSION 4)
+    set(CPACK_WIX_PATCH_FILE "${CMAKE_SOURCE_DIR}/windows/wix-patch.xml")
 
     add_custom_target(firebox-service ALL
         COMMAND cargo build --release
@@ -44,19 +43,6 @@ if(WIN32)
             PATTERN "*.pdb" EXCLUDE)
     install(PROGRAMS ${WIN_HELPER_OUT}/Helper.exe DESTINATION bin)
 
-    set(CPACK_NSIS_EXTRA_INSTALL_COMMANDS "
-        WriteRegStr HKCR 'firebox' '' 'URL:FireBox Protocol'
-        WriteRegStr HKCR 'firebox' 'URL Protocol' ''
-        WriteRegStr HKCR 'firebox\\\\DefaultIcon' '' '$INSTDIR\\\\bin\\\\firebox-service.exe,0'
-        WriteRegStr HKCR 'firebox\\\\shell\\\\open\\\\command' '' '\\\"$INSTDIR\\\\bin\\\\firebox-service.exe\\\" \\\"%1\\\"'
-        ExecWait 'sc create FireBoxService binPath= \\\"$INSTDIR\\\\bin\\\\firebox-service.exe\\\" start= auto DisplayName= \\\"FireBox AI Gateway\\\"'
-        ExecWait 'sc start FireBoxService'
-    ")
-    set(CPACK_NSIS_EXTRA_UNINSTALL_COMMANDS "
-        ExecWait 'sc stop FireBoxService'
-        ExecWait 'sc delete FireBoxService'
-        DeleteRegKey HKCR 'firebox'
-    ")
 elseif(APPLE)
     set(CPACK_GENERATOR "productbuild")
     set(CPACK_PACKAGING_INSTALL_PREFIX "/")

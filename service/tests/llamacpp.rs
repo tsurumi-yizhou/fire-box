@@ -3,7 +3,7 @@
 use firebox_service::providers::llamacpp::{LlamaCppConfig, LlamaCppProvider};
 use firebox_service::providers::{
     BoxStream, ChatMessage, CompletionRequest, CompletionResponse, EmbeddingRequest,
-    EmbeddingResponse, Provider, StreamEvent,
+    EmbeddingResponse, Provider, RuntimeModelInfo, StreamEvent,
 };
 use std::path::PathBuf;
 
@@ -338,10 +338,14 @@ fn completion_request_local() {
         messages: vec![ChatMessage {
             role: "user".to_string(),
             content: "Hello".to_string(),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
         }],
         max_tokens: Some(256),
         temperature: Some(0.7),
         stream: false,
+        tools: None,
     };
 
     assert_eq!(request.model, "llama-2-7b");
@@ -355,15 +359,22 @@ fn completion_request_with_system_message() {
             ChatMessage {
                 role: "system".to_string(),
                 content: "You are a helpful assistant".to_string(),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
             },
             ChatMessage {
                 role: "user".to_string(),
                 content: "Hi".to_string(),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
             },
         ],
         max_tokens: Some(128),
         temperature: None,
         stream: false,
+        tools: None,
     };
 
     assert_eq!(request.messages.len(), 2);
@@ -395,10 +406,14 @@ async fn complete_without_server_should_fail() {
         messages: vec![ChatMessage {
             role: "user".to_string(),
             content: "Test".to_string(),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
         }],
         max_tokens: None,
         temperature: None,
         stream: false,
+        tools: None,
     };
 
     // This will fail because no llama.cpp server is running
@@ -416,6 +431,7 @@ async fn complete_stream_without_server_should_fail() {
         max_tokens: None,
         temperature: None,
         stream: true,
+        tools: None,
     };
 
     let result: anyhow::Result<BoxStream<anyhow::Result<StreamEvent>>> =
@@ -429,6 +445,7 @@ async fn embed_not_implemented() {
     let request = EmbeddingRequest {
         model: "local".to_string(),
         input: vec!["test".to_string()],
+        encoding_format: None,
     };
 
     let result: anyhow::Result<EmbeddingResponse> = provider.embed("test-session", &request).await;
@@ -440,9 +457,9 @@ async fn list_models_without_server() {
     let provider = LlamaCppProvider::from_model_path("/models/qwen-7b.gguf");
 
     // list_models should return the model filename even without server
-    let models: Vec<String> = provider.list_models().await.unwrap();
+    let models: Vec<RuntimeModelInfo> = provider.list_models().await.unwrap();
     assert!(!models.is_empty());
-    assert!(models.iter().any(|m| m.contains("qwen-7b.gguf")));
+    assert!(models.iter().any(|m| m.id.contains("qwen-7b.gguf")));
 }
 
 #[tokio::test]
@@ -450,7 +467,7 @@ async fn list_models_with_server_url() {
     let provider = LlamaCppProvider::from_server_url("http://localhost:8080".to_string());
 
     // Without a running server, this should fail
-    let result: anyhow::Result<Vec<String>> = provider.list_models().await;
+    let result: anyhow::Result<Vec<RuntimeModelInfo>> = provider.list_models().await;
     assert!(result.is_err());
 }
 
@@ -486,7 +503,12 @@ fn model_path_relative() {
 
 #[test]
 fn model_path_absolute() {
-    let provider = LlamaCppProvider::from_model_path("/absolute/path/test.gguf");
+    #[cfg(target_os = "windows")]
+    let path = r"C:\absolute\path\test.gguf";
+    #[cfg(not(target_os = "windows"))]
+    let path = "/absolute/path/test.gguf";
+
+    let provider = LlamaCppProvider::from_model_path(path);
     assert!(provider.model_path().is_absolute());
 }
 

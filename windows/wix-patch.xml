@@ -1,0 +1,46 @@
+<CPackWiXPatch>
+  <CPackWiXFragment Id="CM_CP_bin.firebox_service.exe">
+    <ServiceInstall
+      Id="FireBoxServiceInstaller"
+      Name="FireBoxService"
+      DisplayName="FireBox AI Gateway"
+      Description="FireBox AI Gateway Service"
+      Type="ownProcess"
+      Start="auto"
+      ErrorControl="normal"
+      Vital="yes" />
+    <ServiceControl
+      Id="FireBoxServiceControl"
+      Name="FireBoxService"
+      Start="install"
+      Stop="both"
+      Remove="uninstall"
+      Wait="yes" />
+
+    <!-- firebox:// URI protocol -->
+    <RegistryKey Root="HKCR" Key="firebox">
+      <RegistryValue Value="URL:FireBox Protocol" Type="string" />
+      <RegistryValue Name="URL Protocol" Value="" Type="string" />
+      <RegistryKey Key="DefaultIcon">
+        <RegistryValue Value="[INSTALL_ROOT]bin\firebox-service.exe,0" Type="string" />
+      </RegistryKey>
+      <RegistryKey Key="shell\open\command">
+        <RegistryValue Value="&quot;[INSTALL_ROOT]bin\firebox-service.exe&quot; &quot;%1&quot;" Type="string" />
+      </RegistryKey>
+    </RegistryKey>
+
+    <!-- COM: CLSID → AppID mapping -->
+    <RegistryKey Root="HKLM" Key="SOFTWARE\Classes\CLSID\{4C2B3D5E-6F7A-8B9C-0D1E-F12345678901}">
+      <RegistryValue Value="FireBox AI Gateway" Type="string" />
+      <RegistryKey Key="AppID">
+        <RegistryValue Value="{4C2B3D5E-6F7A-8B9C-0D1E-F12345678901}" Type="string" />
+      </RegistryKey>
+    </RegistryKey>
+
+    <!-- COM: AppID → LocalService binding -->
+    <RegistryKey Root="HKLM" Key="SOFTWARE\Classes\AppID\{4C2B3D5E-6F7A-8B9C-0D1E-F12345678901}">
+      <RegistryValue Value="FireBox AI Gateway" Type="string" />
+      <RegistryValue Name="LocalService" Value="FireBoxService" Type="string" />
+    </RegistryKey>
+  </CPackWiXFragment>
+</CPackWiXPatch>

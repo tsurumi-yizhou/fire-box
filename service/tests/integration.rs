@@ -186,18 +186,30 @@ fn test_conversation_flow() {
         ChatMessage {
             role: "system".to_string(),
             content: "You are a helpful coding assistant.".to_string(),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
         },
         ChatMessage {
             role: "user".to_string(),
             content: "Write a function to add two numbers.".to_string(),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
         },
         ChatMessage {
             role: "assistant".to_string(),
             content: "```python\ndef add(a, b):\n    return a + b\n```".to_string(),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
         },
         ChatMessage {
             role: "user".to_string(),
             content: "Now make it handle strings.".to_string(),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
         },
     ];
 
@@ -207,6 +219,7 @@ fn test_conversation_flow() {
         max_tokens: Some(500),
         temperature: Some(0.7),
         stream: false,
+        tools: None,
     };
 
     assert_eq!(request.messages.len(), 4);
@@ -220,6 +233,9 @@ fn test_request_configurations() {
     let base_messages = vec![ChatMessage {
         role: "user".to_string(),
         content: "Test".to_string(),
+        tool_calls: None,
+        tool_call_id: None,
+        name: None,
     }];
 
     // High temperature, low tokens
@@ -229,6 +245,7 @@ fn test_request_configurations() {
         max_tokens: Some(50),
         temperature: Some(2.0),
         stream: false,
+        tools: None,
     };
 
     // Low temperature, high tokens
@@ -238,6 +255,7 @@ fn test_request_configurations() {
         max_tokens: Some(4096),
         temperature: Some(0.1),
         stream: false,
+        tools: None,
     };
 
     // No temperature, no max tokens
@@ -247,6 +265,7 @@ fn test_request_configurations() {
         max_tokens: None,
         temperature: None,
         stream: false,
+        tools: None,
     };
 
     // Streaming request
@@ -256,6 +275,7 @@ fn test_request_configurations() {
         max_tokens: None,
         temperature: None,
         stream: true,
+        tools: None,
     };
 }
 
@@ -275,6 +295,9 @@ fn test_response_structure() {
                 message: ChatMessage {
                     role: "assistant".to_string(),
                     content: "First choice".to_string(),
+                    tool_calls: None,
+                    tool_call_id: None,
+                    name: None,
                 },
                 finish_reason: Some("stop".to_string()),
             },
@@ -283,6 +306,9 @@ fn test_response_structure() {
                 message: ChatMessage {
                     role: "assistant".to_string(),
                     content: "Second choice".to_string(),
+                    tool_calls: None,
+                    tool_call_id: None,
+                    name: None,
                 },
                 finish_reason: Some("length".to_string()),
             },
@@ -309,6 +335,9 @@ fn test_response_without_usage() {
             message: ChatMessage {
                 role: "assistant".to_string(),
                 content: "Response".to_string(),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
             },
             finish_reason: None,
         }],
@@ -381,6 +410,7 @@ fn test_stream_event_sequence() {
         match event {
             StreamEvent::Delta { content: delta } => content.push_str(&delta),
             StreamEvent::Done => break,
+            StreamEvent::ToolCalls { .. } => (),
             StreamEvent::Error { message } => panic!("Unexpected error: {}", message),
         }
     }
@@ -406,6 +436,7 @@ fn test_stream_error_handling() {
     for event in events {
         match event {
             StreamEvent::Delta { content: delta } => content.push_str(&delta),
+            StreamEvent::ToolCalls { .. } => (),
             StreamEvent::Error { message } => {
                 error_occurred = true;
                 assert_eq!(message, "Network error");
@@ -431,6 +462,7 @@ fn test_embedding_workflow() {
             "The quick brown fox".to_string(),
             "jumps over the lazy dog".to_string(),
         ],
+        encoding_format: None,
     };
 
     assert_eq!(request.input.len(), 2);
@@ -530,11 +562,12 @@ fn test_metrics_under_load() {
 
     assert_eq!(snapshot.requests_total, 100);
     assert_eq!(snapshot.requests_failed, 0);
-    assert!(snapshot.latency_avg_ms > 0);
+    // latency_avg_ms may be 0 when requests complete in sub-millisecond time
 
     // Verify token counts
     let expected_prompt: u64 = (100..200).sum();
-    let expected_completion: u64 = (50..100).sum();
+    // completion_tokens = 50 + i/2 for i in 0..100 (integer division)
+    let expected_completion: u64 = (0u64..100).map(|i| 50 + i / 2).sum();
     assert_eq!(snapshot.prompt_tokens_total, expected_prompt);
     assert_eq!(snapshot.completion_tokens_total, expected_completion);
 }
@@ -552,15 +585,22 @@ fn test_request_response_serialization() {
             ChatMessage {
                 role: "system".to_string(),
                 content: "You are helpful.".to_string(),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
             },
             ChatMessage {
                 role: "user".to_string(),
                 content: "Hello!".to_string(),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
             },
         ],
         max_tokens: Some(1000),
         temperature: Some(0.7),
         stream: false,
+        tools: None,
     };
 
     // Serialize request

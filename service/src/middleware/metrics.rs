@@ -5,8 +5,10 @@
 //! - Token usage (prompt, completion, total) per provider/model
 //! - Latency
 //! - Cost estimates per provider/model
+//! - Per-minute ring buffer for range queries (last 24 h)
 
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::sync::LazyLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -294,6 +296,80 @@ static COLLECTOR: LazyLock<MetricsCollector> = LazyLock::new(|| MetricsCollector
     cost_total_microcents: AtomicU64::new(0),
     provider_metrics: AsyncRwLock::new(HashMap::new()),
 });
+
+// ---------------------------------------------------------------------------
+// Per-minute ring buffer for range queries (last 24 h = 1440 buckets)
+// ---------------------------------------------------------------------------
+
+const RING_BUFFER_MINUTES: usize = 1440; // 24 hours
+
+/// A single minute-granularity metrics bucket.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MinuteBucket {
+    /// Unix timestamp (ms) of the start of this minute.
+    pub timestamp_ms: u64,
+    pub requests_total: u64,
+    pub requests_failed: u64,
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    pub cost_total: f64,
+}
+
+/// The global per-minute ring buffer.
+static RING_BUFFER: LazyLock<AsyncRwLock<VecDeque<MinuteBucket>>> =
+    LazyLock::new(|| AsyncRwLock::new(VecDeque::with_capacity(RING_BUFFER_MINUTES)));
+
+/// Record a single request into the current minute's ring-buffer bucket.
+pub async fn record_minute_bucket(
+    requests: u64,
+    failed: u64,
+    prompt_tokens: u64,
+    completion_tokens: u64,
+    cost_total: f64,
+) {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    // Round down to the start of the current minute.
+    let minute_start = (now_ms / 60_000) * 60_000;
+
+    let mut buf = RING_BUFFER.write().await;
+
+    // Either update the last bucket (same minute) or push a new one.
+    if let Some(last) = buf.back_mut()
+        && last.timestamp_ms == minute_start
+    {
+        last.requests_total += requests;
+        last.requests_failed += failed;
+        last.prompt_tokens += prompt_tokens;
+        last.completion_tokens += completion_tokens;
+        last.cost_total += cost_total;
+        return;
+    }
+
+    // New minute: evict oldest entry if at capacity.
+    if buf.len() == RING_BUFFER_MINUTES {
+        buf.pop_front();
+    }
+    buf.push_back(MinuteBucket {
+        timestamp_ms: minute_start,
+        requests_total: requests,
+        requests_failed: failed,
+        prompt_tokens,
+        completion_tokens,
+        cost_total,
+    });
+}
+
+/// Return all minute buckets whose `timestamp_ms` falls within `[start_ms, end_ms]`.
+pub async fn get_metrics_range(start_ms: u64, end_ms: u64) -> Vec<MinuteBucket> {
+    let buf = RING_BUFFER.read().await;
+    buf.iter()
+        .filter(|b| b.timestamp_ms >= start_ms && b.timestamp_ms <= end_ms)
+        .cloned()
+        .collect()
+}
 
 /// Get the global metrics collector.
 pub fn global_collector() -> &'static MetricsCollector {

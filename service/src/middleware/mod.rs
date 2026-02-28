@@ -7,7 +7,9 @@
 //! - **route**: Model routing and failover logic
 //! - **metrics**: Request/response metrics collection
 //! - **metadata**: AI provider and model metadata management
+//! - **access**: TOFU allowlist and connection access control
 
+pub mod access;
 pub mod config;
 pub mod metadata;
 pub mod metrics;
@@ -15,6 +17,6 @@ pub mod route;
 pub mod storage;
 
 // Re-export commonly used types
-pub use config::{ConfigData, load_config, update_config};
+pub use config::{AccessEntry, AccessStatus, ConfigData, load_config, update_config};
 pub use metadata::{MetadataManager, Model, Vendor};
 pub use storage::{delete_secret, get_secret, set_secret, set_secret_with_biometric};

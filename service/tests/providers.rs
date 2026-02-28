@@ -8,6 +8,9 @@ use firebox_service::providers::{
     copilot::CopilotProvider, openai::OpenAiProvider,
 };
 
+const OPENAI_URL: &str = "https://api.openai.com/v1";
+const ANTHROPIC_URL: &str = "https://api.anthropic.com/v1";
+
 /// Test helper to create a basic completion request
 fn create_test_request() -> CompletionRequest {
     CompletionRequest {
@@ -15,10 +18,14 @@ fn create_test_request() -> CompletionRequest {
         messages: vec![ChatMessage {
             role: "user".to_string(),
             content: "Hello, world!".to_string(),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
         }],
         max_tokens: Some(100),
         temperature: Some(0.7),
         stream: false,
+        tools: None,
     }
 }
 
@@ -26,7 +33,7 @@ fn create_test_request() -> CompletionRequest {
 #[ignore] // Requires valid API key
 async fn test_openai_provider_complete() {
     let api_key = std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY not set");
-    let provider = OpenAiProvider::new(api_key);
+    let provider = OpenAiProvider::with_base_url(Some(api_key), OPENAI_URL.to_string());
 
     let request = create_test_request();
     let response = provider.complete("test-session", &request).await;
@@ -47,7 +54,7 @@ async fn test_openai_provider_complete() {
 #[ignore] // Requires valid API key
 async fn test_anthropic_provider_complete() {
     let api_key = std::env::var("ANTHROPIC_API_KEY").expect("ANTHROPIC_API_KEY not set");
-    let provider = AnthropicProvider::new(api_key);
+    let provider = AnthropicProvider::new(api_key, ANTHROPIC_URL);
 
     let request = create_test_request();
     let response = provider.complete("test-session", &request).await;
@@ -82,8 +89,10 @@ async fn test_copilot_provider_complete() {
 }
 
 #[tokio::test]
+#[ignore] // Requires network access
 async fn test_openai_provider_invalid_key() {
-    let provider = OpenAiProvider::new("invalid-key".to_string());
+    let provider =
+        OpenAiProvider::with_base_url(Some("invalid-key".to_string()), OPENAI_URL.to_string());
 
     let request = create_test_request();
     let response = provider.complete("test-session", &request).await;
@@ -97,8 +106,9 @@ async fn test_openai_provider_invalid_key() {
 }
 
 #[tokio::test]
+#[ignore] // Requires network access
 async fn test_anthropic_provider_invalid_key() {
-    let provider = AnthropicProvider::new("invalid-key".to_string());
+    let provider = AnthropicProvider::new("invalid-key", ANTHROPIC_URL);
 
     let request = create_test_request();
     let response = provider.complete("test-session", &request).await;
@@ -121,10 +131,7 @@ async fn test_openai_provider_with_custom_endpoint() {
 
 #[tokio::test]
 async fn test_anthropic_provider_with_custom_endpoint() {
-    let provider = AnthropicProvider::with_base_url(
-        "test-key".to_string(),
-        "http://localhost:8080".to_string(),
-    );
+    let provider = AnthropicProvider::new("test-key", "http://localhost:8080");
 
     assert_eq!(provider.base_url(), "http://localhost:8080");
     assert_eq!(provider.api_key(), "test-key");
@@ -134,7 +141,7 @@ async fn test_anthropic_provider_with_custom_endpoint() {
 #[ignore] // Requires valid API key
 async fn test_openai_provider_list_models() {
     let api_key = std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY not set");
-    let provider = OpenAiProvider::new(api_key);
+    let provider = OpenAiProvider::with_base_url(Some(api_key), OPENAI_URL.to_string());
 
     let models = provider.list_models().await;
     assert!(models.is_ok(), "Should list models successfully");
@@ -143,15 +150,16 @@ async fn test_openai_provider_list_models() {
 }
 
 #[tokio::test]
+#[ignore] // Requires valid API key
 async fn test_anthropic_provider_list_models() {
-    let provider = AnthropicProvider::new("test-key".to_string());
+    let provider = AnthropicProvider::new("test-key", ANTHROPIC_URL);
 
     let models = provider.list_models().await;
     assert!(models.is_ok(), "Should list models successfully");
     let models = models.unwrap();
     assert!(!models.is_empty(), "Should have known Claude models");
     assert!(
-        models.iter().any(|m| m.contains("claude")),
+        models.iter().any(|m| m.id.contains("claude")),
         "Should include Claude models"
     );
 }
@@ -173,7 +181,7 @@ async fn test_openai_provider_stream() {
     use futures_util::StreamExt;
 
     let api_key = std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY not set");
-    let provider = OpenAiProvider::new(api_key);
+    let provider = OpenAiProvider::with_base_url(Some(api_key), OPENAI_URL.to_string());
 
     let request = create_test_request();
     let stream = provider.complete_stream("test-session", &request).await;

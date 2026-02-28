@@ -353,10 +353,14 @@ fn completion_request_for_dashscope() {
         messages: vec![ChatMessage {
             role: "user".to_string(),
             content: "你好".to_string(),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
         }],
         max_tokens: Some(1000),
         temperature: Some(0.7),
         stream: false,
+        tools: None,
     };
 
     assert_eq!(request.model, "qwen-max");
@@ -373,6 +377,7 @@ fn qwen_model_names() {
             max_tokens: None,
             temperature: None,
             stream: false,
+            tools: None,
         };
         assert!(request.model.starts_with("qwen-"));
     }
@@ -385,10 +390,14 @@ fn completion_request_with_chinese_content() {
         messages: vec![ChatMessage {
             role: "user".to_string(),
             content: "请解释这段代码".to_string(),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
         }],
         max_tokens: Some(500),
         temperature: None,
         stream: false,
+        tools: None,
     };
 
     assert!(request.messages[0].content.contains("请解释"));
@@ -411,10 +420,14 @@ async fn complete_with_invalid_token_should_fail() {
         messages: vec![ChatMessage {
             role: "user".to_string(),
             content: "Test".to_string(),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
         }],
         max_tokens: None,
         temperature: None,
         stream: false,
+        tools: None,
     };
 
     let result = provider.complete("test-session", &request).await;
@@ -438,6 +451,7 @@ async fn complete_stream_not_implemented() {
         max_tokens: None,
         temperature: None,
         stream: true,
+        tools: None,
     };
 
     let result = provider.complete_stream("test-session", &request).await;
@@ -461,6 +475,7 @@ async fn embed_not_implemented() {
     let request = EmbeddingRequest {
         model: "text-embedding".to_string(),
         input: vec!["test".to_string()],
+        encoding_format: None,
     };
 
     let result = provider.embed("test-session", &request).await;

@@ -39,7 +39,19 @@ systemd-journal-logger.workspace = true
 xpc-connection.workspace = true
 xpc-connection-sys.workspace = true
 block = "0.1"
+libc = "0.2"
 
-# Windows: Service Control Manager support
+# Windows: Service Control Manager + COM server support
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-service.workspace = true
+windows-core = "0.58"
+windows = { version = "0.58", features = [
+    "implement",
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_System_Ole",
+    "Win32_System_Threading",
+    "Win32_Security",
+    "Win32_System_Rpc",
+    "Win32_System_RemoteDesktop",
+] }

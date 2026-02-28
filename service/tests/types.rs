@@ -10,6 +10,9 @@ fn chat_message_serialization() {
     let msg = ChatMessage {
         role: "user".to_string(),
         content: "Hello, world!".to_string(),
+        tool_calls: None,
+        tool_call_id: None,
+        name: None,
     };
     let json = serde_json::to_string(&msg).unwrap();
     assert!(json.contains("user"));
@@ -31,10 +34,14 @@ fn completion_request_with_all_fields() {
         messages: vec![ChatMessage {
             role: "user".to_string(),
             content: "Test".to_string(),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
         }],
         max_tokens: Some(100),
         temperature: Some(0.7),
         stream: true,
+        tools: None,
     };
     let json = serde_json::to_string(&req).unwrap();
     assert!(json.contains("gpt-4"));
@@ -51,6 +58,7 @@ fn completion_request_minimal_fields() {
         max_tokens: None,
         temperature: None,
         stream: false,
+        tools: None,
     };
     let json = serde_json::to_string(&req).unwrap();
     // Optional fields should be skipped
@@ -68,6 +76,9 @@ fn completion_response_full() {
             message: ChatMessage {
                 role: "assistant".to_string(),
                 content: "Response".to_string(),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
             },
             finish_reason: Some("stop".to_string()),
         }],
@@ -92,14 +103,17 @@ fn completion_response_no_usage() {
             index: 0,
             message: ChatMessage {
                 role: "assistant".to_string(),
-                content: "No usage info".to_string(),
+                content: "No token stats".to_string(),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
             },
             finish_reason: None,
         }],
         usage: None,
     };
     let json = serde_json::to_string(&resp).unwrap();
-    assert!(!json.contains("usage"));
+    assert!(!json.contains("\"usage\""));
 }
 
 #[test]
@@ -122,6 +136,9 @@ fn choice_with_finish_reason() {
         message: ChatMessage {
             role: "assistant".to_string(),
             content: "Test".to_string(),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
         },
         finish_reason: Some("length".to_string()),
     };
@@ -136,6 +153,9 @@ fn choice_without_finish_reason() {
         message: ChatMessage {
             role: "user".to_string(),
             content: "Test".to_string(),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
         },
         finish_reason: None,
     };
@@ -149,6 +169,7 @@ fn embedding_request_single() {
     let req = EmbeddingRequest {
         model: "text-embedding-ada-002".to_string(),
         input: vec!["hello".to_string()],
+        encoding_format: None,
     };
     let json = serde_json::to_string(&req).unwrap();
     assert!(json.contains("text-embedding-ada-002"));
@@ -164,6 +185,7 @@ fn embedding_request_multiple() {
             "second".to_string(),
             "third".to_string(),
         ],
+        encoding_format: None,
     };
     let json = serde_json::to_string(&req).unwrap();
     assert!(json.contains("first"));
@@ -278,19 +300,29 @@ fn completion_request_multiple_messages() {
             ChatMessage {
                 role: "system".to_string(),
                 content: "You are helpful".to_string(),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
             },
             ChatMessage {
                 role: "user".to_string(),
                 content: "Hi".to_string(),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
             },
             ChatMessage {
                 role: "assistant".to_string(),
                 content: "Hello!".to_string(),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
             },
         ],
         max_tokens: None,
         temperature: None,
         stream: false,
+        tools: None,
     };
     let json = serde_json::to_string(&req).unwrap();
     assert!(json.contains("system"));
@@ -309,6 +341,9 @@ fn completion_response_multiple_choices() {
                 message: ChatMessage {
                     role: "assistant".to_string(),
                     content: "First".to_string(),
+                    tool_calls: None,
+                    tool_call_id: None,
+                    name: None,
                 },
                 finish_reason: Some("stop".to_string()),
             },
@@ -317,6 +352,9 @@ fn completion_response_multiple_choices() {
                 message: ChatMessage {
                     role: "assistant".to_string(),
                     content: "Second".to_string(),
+                    tool_calls: None,
+                    tool_call_id: None,
+                    name: None,
                 },
                 finish_reason: Some("length".to_string()),
             },
@@ -344,6 +382,9 @@ fn chat_message_with_special_characters() {
     let msg = ChatMessage {
         role: "user".to_string(),
         content: "Hello\nWorld\t\"quoted\"".to_string(),
+        tool_calls: None,
+        tool_call_id: None,
+        name: None,
     };
     let json = serde_json::to_string(&msg).unwrap();
     let decoded: ChatMessage = serde_json::from_str(&json).unwrap();
@@ -357,10 +398,14 @@ fn completion_request_with_unicode() {
         messages: vec![ChatMessage {
             role: "user".to_string(),
             content: "你好 世界 🌍".to_string(),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
         }],
         max_tokens: None,
         temperature: None,
         stream: false,
+        tools: None,
     };
     let json = serde_json::to_string(&req).unwrap();
     let decoded: CompletionRequest = serde_json::from_str(&json).unwrap();

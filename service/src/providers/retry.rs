@@ -19,10 +19,10 @@ pub struct RetryConfig {
 impl Default for RetryConfig {
     fn default() -> Self {
         Self {
-            max_retries: 3,
-            initial_backoff: Duration::from_millis(100),
-            max_backoff: Duration::from_secs(10),
-            multiplier: 2.0,
+            max_retries: crate::providers::consts::RETRY_MAX_RETRIES,
+            initial_backoff: crate::providers::consts::RETRY_INITIAL_BACKOFF,
+            max_backoff: crate::providers::consts::RETRY_MAX_BACKOFF,
+            multiplier: crate::providers::consts::RETRY_MULTIPLIER,
         }
     }
 }
@@ -72,29 +72,36 @@ where
 
 /// Determine if an error is retryable.
 fn is_retryable(error: &anyhow::Error) -> bool {
-    let error_str = error.to_string().to_lowercase();
+    // Check for reqwest errors first (typed).
+    if let Some(req_err) = error.downcast_ref::<reqwest::Error>() {
+        return req_err.is_timeout()
+            || req_err.is_connect()
+            || req_err.is_request()
+            || req_err.status().is_some_and(|s| {
+                s.is_server_error() || s == reqwest::StatusCode::TOO_MANY_REQUESTS
+            });
+    }
 
-    // Network errors
-    if error_str.contains("connection")
+    // Check for ProviderError.
+    if let Some(provider_err) = error.downcast_ref::<crate::providers::ProviderError>() {
+        return matches!(
+            provider_err,
+            crate::providers::ProviderError::RateLimited { .. }
+                | crate::providers::ProviderError::RequestFailed(_)
+        );
+    }
+
+    // Fallback: string matching for errors that don't use typed variants.
+    let error_str = error.to_string().to_lowercase();
+    error_str.contains("connection")
         || error_str.contains("timeout")
         || error_str.contains("dns")
         || error_str.contains("network")
-    {
-        return true;
-    }
-
-    // HTTP status codes that are retryable
-    if error_str.contains("http 429")  // Rate limit
-        || error_str.contains("http 500")  // Internal server error
-        || error_str.contains("http 502")  // Bad gateway
-        || error_str.contains("http 503")  // Service unavailable
+        || error_str.contains("http 429")
+        || error_str.contains("http 500")
+        || error_str.contains("http 502")
+        || error_str.contains("http 503")
         || error_str.contains("http 504")
-    // Gateway timeout
-    {
-        return true;
-    }
-
-    false
 }
 
 #[cfg(test)]

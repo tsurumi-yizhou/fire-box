@@ -1,8 +1,9 @@
 [Desktop Entry]
 Type=Application
-Name=FireBox
-Exec=/usr/bin/firebox-service %u
+Name=Fire Box
+GenericName=AI Gateway
+Comment=Cross-platform AI gateway service manager
+Exec=/usr/bin/App
 Icon=firebox
 Terminal=false
 Categories=Utility;
-MimeType=x-scheme-handler/firebox;

@@ -2,77 +2,72 @@ import Foundation
 
 // MARK: - Data Models
 
-struct MetricsSnapshot: Codable {
-    let timestampMs: Int64
-    let totalRequests: Int64
-    let totalTokensInput: Int64
-    let totalTokensOutput: Int64
-    let totalCost: Double
-    let activeConnections: Int32
+struct MetricsSnapshot {
+    let windowStartMs: Int64
+    let windowEndMs: Int64
+    let requestsTotal: Int64
+    let requestsFailed: Int64
+    let promptTokensTotal: Int64
+    let completionTokensTotal: Int64
+    let latencyAvgMs: Int64
+    let costTotal: Double
 }
 
-struct Connection: Codable, Identifiable {
+struct Connection: Identifiable {
     let connectionId: String
-    let programName: String
-    let programPath: String
+    let clientName: String
+    let appPath: String
+    let requestsCount: Int64
     let connectedAtMs: Int64
-    let lastActivityMs: Int64
-    let requestCount: Int64
 
     var id: String { connectionId }
 }
 
-enum ProviderType: Int, Codable {
-    case apiKey = 1
-    case oauth = 2
-    case local = 3
-}
-
-struct Provider: Codable, Identifiable {
+struct Provider: Identifiable {
     let providerId: String
-    let name: String
-    let type: ProviderType
-    let baseUrl: String?
-    let localPath: String?
+    let displayName: String
+    let providerType: String
 
     var id: String { providerId }
 }
 
-struct Model: Codable, Identifiable {
-    let modelId: String
-    let providerId: String?
-    let contextWindow: Int32?
-    let enabled: Bool
-    let capabilityChat: Bool?
-    let capabilityTools: Bool?
-    let capabilityVision: Bool?
-    let capabilityEmbeddings: Bool?
-    let capabilityStreaming: Bool?
-    let costInputPerMillionTokens: Double?
-    let costOutputPerMillionTokens: Double?
-    let costCacheReadPerMillionTokens: Double?
-    let costCacheWritePerMillionTokens: Double?
-
-    var id: String { modelId }
-}
-
-struct RouteTarget: Codable {
+struct RouteTarget {
     let providerId: String
     let modelId: String
 }
 
-struct RouteRule: Codable, Identifiable {
-    let alias: String
+struct RouteRule: Identifiable {
+    let virtualModelId: String
+    let displayName: String
+    let strategy: String
     let targets: [RouteTarget]
 
-    var id: String { alias }
+    var id: String { virtualModelId }
+}
+
+struct AllowlistEntry: Identifiable {
+    let appPath: String
+    let displayName: String
+
+    var id: String { appPath }
+}
+
+struct OAuthChallenge {
+    let deviceCode: String
+    let userCode: String
+    let verificationUri: String
+    let expiresIn: Int64
+    let interval: Int64
 }
 
 // MARK: - XPC Transport
 
 private let xpcServiceName = "com.firebox.service"
 
-/// Send a request to the Rust XPC service and return the "body" reply dict.
+/// Send a request to the Rust XPC service and return the "body" sub-dict on success.
+///
+/// The Rust service wraps every response as `{ "success": bool, "body": { ... } }`.
+/// On failure (success=false or transport error), returns nil.
 private func xpcSend(_ request: [String: Any]) async -> [String: Any]? {
     await withCheckedContinuation { continuation in
         let conn = xpc_connection_create_mach_service(xpcServiceName, nil, 0)
@@ -88,56 +83,70 @@ private func xpcSend(_ request: [String: Any]) async -> [String: Any]? {
                 xpc_dictionary_set_int64(msg, key, i)
             case let b as Bool:
                 xpc_dictionary_set_bool(msg, key, b)
-            case let arr as [[String: String]]:
-                let xarr = xpc_array_create(nil, 0)
-                for item in arr {
-                    let xitem = xpc_dictionary_create(nil, nil, 0)
-                    for (k, v) in item { xpc_dictionary_set_string(xitem, k, v) }
-                    xpc_array_append_value(xarr, xitem)
-                    xpc_release(xitem)
+            case let arr as [[String: Any]]:
+                let xpcArr = xpc_array_create(nil, 0)
+                for dict in arr {
+                    let xpcDict = xpc_dictionary_create(nil, nil, 0)
+                    for (k, v) in dict {
+                        if let s = v as? String {
+                            xpc_dictionary_set_string(xpcDict, k, s)
+                        }
+                    }
+                    xpc_array_append_value(xpcArr, xpcDict)
                 }
-                xpc_dictionary_set_value(msg, key, xarr)
-                xpc_release(xarr)
+                xpc_dictionary_set_value(msg, key, xpcArr)
             default:
                 break
             }
         }
 
         xpc_connection_send_message_with_reply(conn, msg, nil) { reply in
-            xpc_connection_cancel(conn)
-            guard xpc_get_type(reply) == XPC_TYPE_DICTIONARY,
-                  let body = xpc_dictionary_get_value(reply, "body"),
-                  xpc_get_type(body) == XPC_TYPE_DICTIONARY
-            else {
+            defer {
+                xpc_connection_cancel(conn)
+                xpc_release(conn)
+            }
+
+            guard xpc_get_type(reply) == XPC_TYPE_DICTIONARY else {
                 continuation.resume(returning: nil)
                 return
             }
-            continuation.resume(returning: xpcDictToSwift(body))
+
+            let success = xpc_dictionary_get_bool(reply, "success")
+            guard success else {
+                continuation.resume(returning: nil)
+                return
+            }
+
+            // Extract the "body" sub-dictionary.
+            guard let bodyObj = xpc_dictionary_get_value(reply, "body"),
+                  xpc_get_type(bodyObj) == XPC_TYPE_DICTIONARY else {
+                // Some commands (e.g. ping) return an empty body dict.
+                continuation.resume(returning: [:])
+                return
+            }
+
+            let body = xpcDictToSwift(bodyObj)
+            continuation.resume(returning: body)
         }
-        xpc_release(msg)
     }
 }
 
+/// Recursively convert an XPC dictionary to a Swift dictionary.
 private func xpcDictToSwift(_ obj: xpc_object_t) -> [String: Any] {
     var result: [String: Any] = [:]
     xpc_dictionary_apply(obj) { key, value in
         let k = String(cString: key)
         let t = xpc_get_type(value)
         if t == XPC_TYPE_STRING {
-            if let ptr = xpc_string_get_string_ptr(value) { result[k] = String(cString: ptr) }
+            result[k] = String(cString: xpc_string_get_string_ptr(value))
         } else if t == XPC_TYPE_INT64 {
             result[k] = xpc_int64_get_value(value)
+        } else if t == XPC_TYPE_DOUBLE {
+            result[k] = xpc_double_get_value(value)
         } else if t == XPC_TYPE_BOOL {
             result[k] = xpc_bool_get_value(value)
         } else if t == XPC_TYPE_ARRAY {
-            var arr: [[String: Any]] = []
-            xpc_array_apply(value) { _, item in
-                if xpc_get_type(item) == XPC_TYPE_DICTIONARY {
-                    arr.append(xpcDictToSwift(item))
-                }
-                return true
-            }
-            result[k] = arr
+            result[k] = xpcArrayToSwift(value)
         } else if t == XPC_TYPE_DICTIONARY {
             result[k] = xpcDictToSwift(value)
         }
@@ -146,83 +155,128 @@ private func xpcDictToSwift(_ obj: xpc_object_t) -> [String: Any] {
     return result
 }
 
+/// Convert an XPC array to a Swift array of dictionaries.
+private func xpcArrayToSwift(_ arr: xpc_object_t) -> [[String: Any]] {
+    var result: [[String: Any]] = []
+    let count = xpc_array_get_count(arr)
+    for i in 0..<count {
+        let elem = xpc_array_get_value(arr, i)
+        if xpc_get_type(elem) == XPC_TYPE_DICTIONARY {
+            result.append(xpcDictToSwift(elem))
+        }
+    }
+    return result
+}
+
+/// Send a request and only check if it succeeded (ignoring body).
+private func xpcSendOk(_ request: [String: Any]) async -> Bool {
+    await xpcSend(request) != nil
+}
+
 // MARK: - Service Client
 
-actor ServiceClient {
+final class ServiceClient: Sendable {
     static let shared = ServiceClient()
-
     private init() {}
 
+    // MARK: - Status
+
     func checkServiceStatus() async -> Bool {
-        let reply = await xpcSend(["cmd": "ping"])
-        return reply?["success"] as? Bool ?? false
+        await xpcSendOk(["cmd": "ping"])
     }
 
-    func getMetricsSnapshot() async -> MetricsSnapshot? {
-        guard let r = await xpcSend(["cmd": "get_metrics"]),
-              r["success"] as? Bool == true else { return nil }
+    // MARK: - Metrics
 
-        let costMicrocents = r["cost_total_microcents"] as? Int64 ?? 0
+    func getMetricsSnapshot() async -> MetricsSnapshot? {
+        guard let b = await xpcSend(["cmd": "get_metrics_snapshot"]) else { return nil }
         return MetricsSnapshot(
-            timestampMs: r["window_end_ms"] as? Int64 ?? 0,
-            totalRequests: r["requests_total"] as? Int64 ?? 0,
-            totalTokensInput: r["prompt_tokens_total"] as? Int64 ?? 0,
-            totalTokensOutput: r["completion_tokens_total"] as? Int64 ?? 0,
-            totalCost: Double(costMicrocents) / 1_000_000.0,
-            activeConnections: 0
+            windowStartMs: b["window_start_ms"] as? Int64 ?? 0,
+            windowEndMs: b["window_end_ms"] as? Int64 ?? 0,
+            requestsTotal: b["requests_total"] as? Int64 ?? 0,
+            requestsFailed: b["requests_failed"] as? Int64 ?? 0,
+            promptTokensTotal: b["prompt_tokens_total"] as? Int64 ?? 0,
+            completionTokensTotal: b["completion_tokens_total"] as? Int64 ?? 0,
+            latencyAvgMs: b["latency_avg_ms"] as? Int64 ?? 0,
+            costTotal: b["cost_total"] as? Double ?? 0.0
         )
     }
 
-    func listConnections() async -> [Connection] {
-        guard let r = await xpcSend(["cmd": "list_connections"]),
-              r["success"] as? Bool == true,
-              let conns = r["connections"] as? [[String: Any]] else { return [] }
+    // MARK: - Connections
 
-        return conns.compactMap { d in
-            guard let cid = d["connection_id"] as? String,
-                  let name = d["client_name"] as? String else { return nil }
+    func listConnections() async -> [Connection] {
+        guard let b = await xpcSend(["cmd": "list_connections"]),
+              let arr = b["connections"] as? [[String: Any]] else { return [] }
+        return arr.compactMap { d in
+            guard let cid = d["connection_id"] as? String else { return nil }
             return Connection(
                 connectionId: cid,
-                programName: name,
-                programPath: "",
-                connectedAtMs: 0,
-                lastActivityMs: 0,
-                requestCount: d["requests_count"] as? Int64 ?? 0
+                clientName: d["client_name"] as? String ?? "",
+                appPath: d["app_path"] as? String ?? "",
+                requestsCount: d["requests_count"] as? Int64 ?? 0,
+                connectedAtMs: d["connected_at_ms"] as? Int64 ?? 0
             )
         }
     }
+
+    // MARK: - Providers
 
     func listProviders() async -> [Provider] {
-        guard let r = await xpcSend(["cmd": "list_providers"]),
-              r["success"] as? Bool == true,
-              let provs = r["providers"] as? [[String: Any]] else { return [] }
-
-        return provs.compactMap { d in
-            guard let pid = d["provider_id"] as? String,
-                  let name = d["name"] as? String else { return nil }
-            let typeRaw = Int(d["type"] as? Int64 ?? 1)
-            let ptype = ProviderType(rawValue: typeRaw) ?? .apiKey
-            let baseUrl = d["base_url"] as? String
+        guard let b = await xpcSend(["cmd": "list_providers"]),
+              let arr = b["providers"] as? [[String: Any]] else { return [] }
+        return arr.compactMap { d in
+            guard let pid = d["provider_id"] as? String else { return nil }
             return Provider(
                 providerId: pid,
-                name: name,
-                type: ptype,
-                baseUrl: baseUrl?.isEmpty == false ? baseUrl : nil,
-                localPath: nil
+                displayName: d["display_name"] as? String ?? pid,
+                providerType: d["provider_type"] as? String ?? "unknown"
             )
         }
     }
 
-    func listModels() async -> [Model] {
-        // Models are derived from providers; no dedicated XPC command yet.
-        return []
+    func addApiKeyProvider(name: String, providerType: String, apiKey: String, baseUrl: String? = nil) async -> Bool {
+        var req: [String: Any] = [
+            "cmd": "add_api_key_provider",
+            "name": name,
+            "provider_type": providerType,
+            "api_key": apiKey,
+        ]
+        if let url = baseUrl, !url.isEmpty { req["base_url"] = url }
+        return await xpcSendOk(req)
     }
 
-    func listRouteRules() async -> [RouteRule] {
-        guard let r = await xpcSend(["cmd": "list_route_rules"]),
-              r["success"] as? Bool == true,
-              let rules = r["rules"] as? [[String: Any]] else { return [] }
+    func addOAuthProvider(name: String, providerType: String) async -> OAuthChallenge? {
+        guard let b = await xpcSend(["cmd": "add_oauth_provider", "name": name, "provider_type": providerType]) else {
+            return nil
+        }
+        guard let dc = b["device_code"] as? String,
+              let uc = b["user_code"] as? String,
+              let uri = b["verification_uri"] as? String else { return nil }
+        return OAuthChallenge(
+            deviceCode: dc,
+            userCode: uc,
+            verificationUri: uri,
+            expiresIn: b["expires_in"] as? Int64 ?? 300,
+            interval: b["interval"] as? Int64 ?? 5
+        )
+    }
 
+    func completeOAuth(providerType: String, deviceCode: String) async -> Bool {
+        await xpcSendOk(["cmd": "complete_oauth", "provider_type": providerType, "device_code": deviceCode])
+    }
+
+    func addLocalProvider(name: String, modelPath: String) async -> Bool {
+        await xpcSendOk(["cmd": "add_local_provider", "name": name, "model_path": modelPath])
+    }
+
+    func removeProvider(providerId: String) async -> Bool {
+        await xpcSendOk(["cmd": "delete_provider", "provider_id": providerId])
+    }
+
+    // MARK: - Routes
+
+    func listRouteRules() async -> [RouteRule] {
+        guard let b = await xpcSend(["cmd": "get_route_rules"]),
+              let rules = b["rules"] as? [[String: Any]] else { return [] }
         return rules.compactMap { d in
             guard let vmid = d["virtual_model_id"] as? String else { return nil }
             let targets = (d["targets"] as? [[String: Any]] ?? []).compactMap { t -> RouteTarget? in
@@ -230,51 +284,49 @@ actor ServiceClient {
                       let mid = t["model_id"] as? String else { return nil }
                 return RouteTarget(providerId: pid, modelId: mid)
             }
-            return RouteRule(alias: vmid, targets: targets)
+            return RouteRule(
+                virtualModelId: vmid,
+                displayName: d["display_name"] as? String ?? vmid,
+                strategy: d["strategy"] as? String ?? "failover",
+                targets: targets
+            )
         }
-    }
-
-    func addProvider(_ provider: Provider) async -> Bool {
-        var req: [String: Any] = [
-            "cmd": "add_api_key_provider",
-            "name": provider.name,
-            "provider_type": providerTypeSlug(provider.type),
-        ]
-        if let url = provider.baseUrl { req["base_url"] = url }
-        let r = await xpcSend(req)
-        return r?["success"] as? Bool ?? false
-    }
-
-    func removeProvider(providerId: String) async -> Bool {
-        let r = await xpcSend(["cmd": "delete_provider", "provider_id": providerId])
-        return r?["success"] as? Bool ?? false
     }
 
     func addRouteRule(_ rule: RouteRule) async -> Bool {
         let targets = rule.targets.map { ["provider_id": $0.providerId, "model_id": $0.modelId] }
-        let r = await xpcSend([
-            "cmd": "set_route_rule",
-            "virtual_model_id": rule.alias,
-            "display_name": rule.alias,
+        return await xpcSendOk([
+            "cmd": "set_route_rules",
+            "virtual_model_id": rule.virtualModelId,
+            "display_name": rule.displayName,
+            "strategy": rule.strategy,
             "targets": targets,
         ])
-        return r?["success"] as? Bool ?? false
     }
 
-    func removeRouteRule(alias: String) async -> Bool {
-        let r = await xpcSend(["cmd": "delete_route_rule", "virtual_model_id": alias])
-        return r?["success"] as? Bool ?? false
+    func removeRouteRule(virtualModelId: String) async -> Bool {
+        await xpcSendOk(["cmd": "delete_route", "virtual_model_id": virtualModelId])
     }
 
     func updateRouteRule(_ rule: RouteRule) async -> Bool {
-        return await addRouteRule(rule)
+        await addRouteRule(rule)
     }
 
-    private func providerTypeSlug(_ type: ProviderType) -> String {
-        switch type {
-        case .apiKey: return "openai"
-        case .oauth:  return "copilot"
-        case .local:  return "llamacpp"
+    // MARK: - Allowlist
+
+    func getAllowlist() async -> [AllowlistEntry] {
+        guard let b = await xpcSend(["cmd": "get_allowlist"]),
+              let apps = b["apps"] as? [[String: Any]] else { return [] }
+        return apps.compactMap { d in
+            guard let path = d["app_path"] as? String else { return nil }
+            return AllowlistEntry(
+                appPath: path,
+                displayName: d["display_name"] as? String ?? path
+            )
         }
+    }
+
+    func removeFromAllowlist(appPath: String) async -> Bool {
+        await xpcSendOk(["cmd": "remove_from_allowlist", "app_path": appPath])
     }
 }

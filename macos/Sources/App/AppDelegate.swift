@@ -1,46 +1,60 @@
 import AppKit
+import ServiceManagement
 import SwiftUI
 
 @MainActor
 class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusBarItem: NSStatusItem?
-    private var serviceClient: ServiceClient?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupStatusBarItem()
-        serviceClient = ServiceClient.shared
+        registerService()
 
         // Hide dock icon, show only in menu bar
         NSApp.setActivationPolicy(.accessory)
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        // Keep app running in menu bar even when window is closed
-        return false
+        false
     }
+
+    // MARK: - SMAppService
+
+    private func registerService() {
+        let service = SMAppService.daemon(plistName: "com.firebox.service")
+        if service.status != .enabled {
+            do {
+                try service.register()
+                NSLog("[FireBox] Service registered via SMAppService")
+            } catch {
+                NSLog("[FireBox] Failed to register service: %@", "\(error)")
+            }
+        }
+    }
+
+    // MARK: - Status Bar
 
     private func setupStatusBarItem() {
         statusBarItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
 
         if let button = statusBarItem?.button {
-            button.image = NSImage(systemSymbolName: "flame.fill", accessibilityDescription: "Firebox")
+            button.image = NSImage(systemSymbolName: "flame.fill", accessibilityDescription: "FireBox")
         }
 
         let menu = NSMenu()
 
-        menu.addItem(NSMenuItem(title: "Show Firebox", action: #selector(showMainWindow), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "Show FireBox", action: #selector(showMainWindow), keyEquivalent: ""))
         menu.addItem(NSMenuItem.separator())
 
-        let statusMenuItem = NSMenuItem(title: "Service: Unknown", action: nil, keyEquivalent: "")
+        let statusMenuItem = NSMenuItem(title: "Service: Checking…", action: nil, keyEquivalent: "")
         statusMenuItem.tag = 100
         menu.addItem(statusMenuItem)
 
         menu.addItem(NSMenuItem.separator())
-        menu.addItem(NSMenuItem(title: "Quit Firebox", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+        menu.addItem(NSMenuItem(title: "Quit FireBox", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
 
-        self.statusBarItem?.menu = menu
+        statusBarItem?.menu = menu
 
-        // Update service status periodically
         Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.updateServiceStatus()
@@ -62,7 +76,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
               let statusMenuItem = menu.item(withTag: 100) else { return }
 
         Task {
-            let isRunning = await serviceClient?.checkServiceStatus() ?? false
+            let isRunning = await ServiceClient.shared.checkServiceStatus()
             await MainActor.run {
                 statusMenuItem.title = isRunning ? "Service: Running" : "Service: Stopped"
             }

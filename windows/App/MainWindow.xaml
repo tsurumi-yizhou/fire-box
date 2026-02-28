@@ -6,7 +6,7 @@
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     mc:Ignorable="d"
-    Title="FireBoxApp">
+    x:Uid="AppTitle">
 
     <Window.SystemBackdrop>
         <DesktopAcrylicBackdrop />
@@ -23,17 +23,50 @@
             Grid.Row="0"
             Background="Transparent">
             <TextBlock
+                x:Uid="AppTitleBar"
                 Margin="12,0,0,0"
                 VerticalAlignment="Center"
                 FontSize="14"
-                FontWeight="SemiBold"
-                Text="FireBox" />
+                FontWeight="SemiBold" />
         </Grid>
 
         <NavigationView
+            x:Name="NavView"
             Grid.Row="1"
             IsBackButtonVisible="Collapsed"
             IsSettingsVisible="False"
-            PaneDisplayMode="Left" />
+            PaneDisplayMode="Left"
+            SelectionChanged="NavView_SelectionChanged">
+
+            <NavigationView.MenuItems>
+                <NavigationViewItem x:Uid="NavDashboard" Tag="dashboard">
+                    <NavigationViewItem.Icon>
+                        <FontIcon Glyph="&#xE9F9;" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
+                <NavigationViewItem x:Uid="NavConnections" Tag="connections">
+                    <NavigationViewItem.Icon>
+                        <FontIcon Glyph="&#xE701;" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
+                <NavigationViewItem x:Uid="NavProviders" Tag="providers">
+                    <NavigationViewItem.Icon>
+                        <FontIcon Glyph="&#xE9F5;" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
+                <NavigationViewItem x:Uid="NavRoutes" Tag="routes">
+                    <NavigationViewItem.Icon>
+                        <FontIcon Glyph="&#xE8FA;" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
+                <NavigationViewItem x:Uid="NavAllowlist" Tag="allowlist">
+                    <NavigationViewItem.Icon>
+                        <FontIcon Glyph="&#xF439;" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
+            </NavigationView.MenuItems>
+
+            <Frame x:Name="ContentFrame" />
+        </NavigationView>
     </Grid>
 </Window>

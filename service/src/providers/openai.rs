@@ -1,30 +1,27 @@
-use anyhow::{Result, bail};
+use anyhow::Result;
 use futures_util::stream;
 
 use crate::middleware::storage;
 use crate::providers::{
     BoxStream, ChatMessage, Choice, CompletionRequest, CompletionResponse, EmbeddingRequest,
-    EmbeddingResponse, Provider, RetryConfig, RuntimeModelInfo, StreamEvent, Usage, with_retry,
+    EmbeddingResponse, Provider, RetryConfig, RuntimeModelInfo, StreamEvent, ToolCall,
+    ToolCallFunction, Usage, with_retry,
 };
+use crate::providers::{consts, shared};
 
 /// Adapter for the OpenAI API and OpenAI-compatible endpoints.
 ///
 /// Supports OpenAI, Ollama, vLLM, and any OpenAI-compatible API.
+/// The caller **must** supply the base URL; this struct never hard-codes one.
 pub struct OpenAiProvider {
     api_key: Option<String>,
     base_url: String,
 }
 
 impl OpenAiProvider {
-    /// Create a new OpenAI provider with the given API key.
-    pub fn new(api_key: impl Into<String>) -> Self {
-        Self {
-            api_key: Some(api_key.into()),
-            base_url: "https://api.openai.com/v1".to_string(),
-        }
-    }
-
-    /// Create a new provider with a custom base URL.
+    /// Create a provider with an explicit base URL.
+    ///
+    /// Use [`consts::OPENAI_BASE_URL`] when targeting the official OpenAI API.
     pub fn with_base_url(api_key: Option<String>, base_url: String) -> Self {
         Self { api_key, base_url }
     }
@@ -59,43 +56,27 @@ impl OpenAiProvider {
     }
 
     // -----------------------------------------------------------------------
-    // Convenience constructors for OpenAI-compatible providers
+    // Convenience constructors for well-known local endpoints
     // -----------------------------------------------------------------------
 
-    /// Create an Ollama provider (no authentication).
+    /// Create an Ollama provider pointing at the default local Ollama address.
     pub fn ollama() -> Self {
-        Self {
-            api_key: None,
-            base_url: "http://localhost:11434/v1".to_string(),
-        }
+        Self::with_base_url(None, "http://localhost:11434/v1".to_string())
     }
 
-    /// Create a vLLM provider with optional API key.
+    /// Create a vLLM provider pointing at the default local vLLM address.
     pub fn vllm(api_key: Option<String>) -> Self {
-        Self {
-            api_key,
-            base_url: "http://localhost:8000/v1".to_string(),
-        }
+        Self::with_base_url(api_key, "http://localhost:8000/v1".to_string())
     }
 
     // -----------------------------------------------------------------------
     // Internal helpers
     // -----------------------------------------------------------------------
 
-    fn build_client() -> reqwest::Client {
-        reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(120))
-            .build()
-            .unwrap_or_default()
-    }
-
     fn prepare_request(&self, request: &CompletionRequest, stream: bool) -> serde_json::Value {
         let mut body = serde_json::json!({
             "model": request.model,
-            "messages": request.messages.iter().map(|m| serde_json::json!({
-                "role": m.role,
-                "content": m.content
-            })).collect::<Vec<_>>(),
+            "messages": request.messages.iter().map(shared::message_to_json).collect::<Vec<_>>(),
             "stream": stream,
         });
 
@@ -105,8 +86,48 @@ impl OpenAiProvider {
         if let Some(temperature) = request.temperature {
             body["temperature"] = serde_json::json!(temperature);
         }
+        if let Some(tools) = request.tools.as_ref().filter(|t| !t.is_empty()) {
+            body["tools"] =
+                serde_json::Value::Array(tools.iter().map(shared::tool_to_json).collect());
+        }
 
         body
+    }
+
+    fn parse_tool_calls(v: &serde_json::Value) -> Option<Vec<ToolCall>> {
+        let arr = v.as_array()?;
+        let mut out = Vec::new();
+        for tc in arr {
+            let id = tc
+                .get("id")
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let call_type = tc
+                .get("type")
+                .and_then(|x| x.as_str())
+                .unwrap_or("function")
+                .to_string();
+            let fn_obj = tc.get("function").unwrap_or(&serde_json::Value::Null);
+            let name = fn_obj
+                .get("name")
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let arguments = fn_obj
+                .get("arguments")
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .to_string();
+            if !name.is_empty() {
+                out.push(ToolCall {
+                    id,
+                    call_type,
+                    function: ToolCallFunction { name, arguments },
+                });
+            }
+        }
+        if out.is_empty() { None } else { Some(out) }
     }
 
     fn parse_response(&self, json: serde_json::Value) -> Result<CompletionResponse> {
@@ -127,6 +148,11 @@ impl OpenAiProvider {
                     .unwrap_or("assistant")
                     .to_string(),
                 content: message_json["content"].as_str().unwrap_or("").to_string(),
+                tool_calls: Self::parse_tool_calls(&message_json["tool_calls"]),
+                tool_call_id: message_json["tool_call_id"]
+                    .as_str()
+                    .map(ToString::to_string),
+                name: message_json["name"].as_str().map(ToString::to_string),
             };
             let finish_reason = choice_json["finish_reason"].as_str().map(|s| s.to_string());
             choices.push(Choice {
@@ -168,24 +194,15 @@ impl Provider for OpenAiProvider {
         let body = self.prepare_request(request, false);
 
         with_retry(&retry_config, || async {
-            let client = Self::build_client();
+            let client = shared::build_http_client(consts::HTTP_TIMEOUT);
             let url = format!("{}/chat/completions", base_url);
 
             let mut req_builder = client.post(&url).header("Content-Type", "application/json");
-
-            // Add Authorization header if API key is present
             if let Some(ref key) = api_key {
                 req_builder = req_builder.header("Authorization", format!("Bearer {}", key));
             }
 
-            let response = req_builder.json(&body).send().await?;
-
-            if !response.status().is_success() {
-                let status = response.status();
-                let error_text = response.text().await.unwrap_or_default();
-                bail!("OpenAI API error: HTTP {} - {}", status, error_text);
-            }
-
+            let response = shared::check_status(req_builder.json(&body).send().await?).await?;
             let json: serde_json::Value = response.json().await?;
             self.parse_response(json)
         })
@@ -197,54 +214,52 @@ impl Provider for OpenAiProvider {
         _session_id: &str,
         request: &CompletionRequest,
     ) -> anyhow::Result<BoxStream<anyhow::Result<StreamEvent>>> {
-        let client = Self::build_client();
+        let client = shared::build_http_client(consts::HTTP_TIMEOUT);
         let url = format!("{}/chat/completions", self.base_url);
-
         let body = self.prepare_request(request, true);
 
         let mut req_builder = client.post(&url).header("Content-Type", "application/json");
-
         if let Some(ref key) = self.api_key {
             req_builder = req_builder.header("Authorization", format!("Bearer {}", key));
         }
 
-        let response = req_builder.json(&body).send().await?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let error_text = response.text().await.unwrap_or_default();
-            bail!("OpenAI API error: HTTP {} - {}", status, error_text);
-        }
-
+        let response = shared::check_status(req_builder.json(&body).send().await?).await?;
         let event_stream = response.bytes_stream();
 
-        // Buffer to accumulate partial lines across chunks
         let stream = stream::unfold(
-            (event_stream, String::new()),
-            |(mut stream, mut buffer)| async move {
+            (event_stream, String::new(), Vec::<ToolCall>::new()),
+            |(mut stream, mut buffer, mut pending_tool_calls)| async move {
                 use futures_util::stream::StreamExt;
 
                 while let Some(chunk_result) = stream.next().await {
                     match chunk_result {
                         Ok(chunk) => {
-                            let text = String::from_utf8_lossy(&chunk);
-                            buffer.push_str(&text);
+                            buffer.push_str(&String::from_utf8_lossy(&chunk));
 
-                            // Process complete lines only
                             while let Some(newline_pos) = buffer.find('\n') {
                                 let line = buffer[..newline_pos].trim().to_string();
                                 buffer.drain(..=newline_pos);
 
-                                if line.is_empty() || !line.starts_with("data: ") {
-                                    continue;
-                                }
+                                let data = match shared::sse_data(&line) {
+                                    Some(d) => d.to_string(),
+                                    None => continue,
+                                };
 
-                                let data = &line[6..]; // Skip "data: "
                                 if data == "[DONE]" {
-                                    return Some((Ok(StreamEvent::Done), (stream, buffer)));
+                                    if !pending_tool_calls.is_empty() {
+                                        let ready = std::mem::take(&mut pending_tool_calls);
+                                        return Some((
+                                            Ok(StreamEvent::ToolCalls { tool_calls: ready }),
+                                            (stream, buffer, pending_tool_calls),
+                                        ));
+                                    }
+                                    return Some((
+                                        Ok(StreamEvent::Done),
+                                        (stream, buffer, pending_tool_calls),
+                                    ));
                                 }
 
-                                match serde_json::from_str::<serde_json::Value>(data) {
+                                match serde_json::from_str::<serde_json::Value>(&data) {
                                     Ok(json) => {
                                         if let Some(choices) = json["choices"].as_array()
                                             && let Some(choice) = choices.first()
@@ -258,15 +273,37 @@ impl Provider for OpenAiProvider {
                                                     Ok(StreamEvent::Delta {
                                                         content: content_str.to_string(),
                                                     }),
-                                                    (stream, buffer),
+                                                    (stream, buffer, pending_tool_calls),
                                                 ));
                                             }
-                                            if let Some(finish_reason) = choice.get("finish_reason")
-                                                && finish_reason.is_string()
+                                            if let Some(delta) = choice.get("delta")
+                                                && let Some(tcs) = delta
+                                                    .get("tool_calls")
+                                                    .and_then(|v| v.as_array())
                                             {
+                                                shared::merge_tool_call_deltas(
+                                                    &mut pending_tool_calls,
+                                                    tcs,
+                                                );
+                                            }
+                                            if choice
+                                                .get("finish_reason")
+                                                .and_then(|v| v.as_str())
+                                                .is_some()
+                                            {
+                                                if !pending_tool_calls.is_empty() {
+                                                    let ready =
+                                                        std::mem::take(&mut pending_tool_calls);
+                                                    return Some((
+                                                        Ok(StreamEvent::ToolCalls {
+                                                            tool_calls: ready,
+                                                        }),
+                                                        (stream, buffer, pending_tool_calls),
+                                                    ));
+                                                }
                                                 return Some((
                                                     Ok(StreamEvent::Done),
-                                                    (stream, buffer),
+                                                    (stream, buffer, pending_tool_calls),
                                                 ));
                                             }
                                         }
@@ -274,7 +311,7 @@ impl Provider for OpenAiProvider {
                                     Err(e) => {
                                         return Some((
                                             Err(anyhow::anyhow!("Failed to parse SSE: {}", e)),
-                                            (stream, buffer),
+                                            (stream, buffer, pending_tool_calls),
                                         ));
                                     }
                                 }
@@ -283,7 +320,7 @@ impl Provider for OpenAiProvider {
                         Err(e) => {
                             return Some((
                                 Err(anyhow::anyhow!("Stream error: {}", e)),
-                                (stream, buffer),
+                                (stream, buffer, pending_tool_calls),
                             ));
                         }
                     }
@@ -301,7 +338,7 @@ impl Provider for OpenAiProvider {
         _session_id: &str,
         request: &EmbeddingRequest,
     ) -> anyhow::Result<EmbeddingResponse> {
-        let client = Self::build_client();
+        let client = shared::build_http_client(consts::HTTP_TIMEOUT);
         let url = format!("{}/embeddings", self.base_url);
 
         let body = serde_json::json!({
@@ -310,19 +347,11 @@ impl Provider for OpenAiProvider {
         });
 
         let mut req_builder = client.post(&url).header("Content-Type", "application/json");
-
         if let Some(ref key) = self.api_key {
             req_builder = req_builder.header("Authorization", format!("Bearer {}", key));
         }
 
-        let response = req_builder.json(&body).send().await?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let error_text = response.text().await.unwrap_or_default();
-            bail!("OpenAI API error: HTTP {} - {}", status, error_text);
-        }
-
+        let response = shared::check_status(req_builder.json(&body).send().await?).await?;
         let json: serde_json::Value = response.json().await?;
 
         let model = json
@@ -348,7 +377,6 @@ impl Provider for OpenAiProvider {
                 .ok_or_else(|| anyhow::anyhow!("Invalid response: missing embedding vector"))?;
 
             let embedding: Vec<f64> = embedding_vec.iter().filter_map(|v| v.as_f64()).collect();
-
             data.push(crate::providers::Embedding { index, embedding });
         }
 
@@ -374,27 +402,25 @@ impl Provider for OpenAiProvider {
             id: String,
         }
 
-        let client = Self::build_client();
-
+        let client = shared::build_http_client(consts::HTTP_TIMEOUT);
         let mut req_builder = client.get(format!("{}/models", self.base_url));
-
         if let Some(ref key) = self.api_key {
             req_builder = req_builder.header("Authorization", format!("Bearer {}", key));
         }
 
-        let response = req_builder.send().await?;
-
-        if !response.status().is_success() {
-            bail!("Failed to fetch models: HTTP {}", response.status());
-        }
-
+        let response = shared::check_status(req_builder.send().await?).await?;
         let model_list: ModelList = response.json().await?;
-        Ok(model_list.data.into_iter().map(|m| RuntimeModelInfo {
-            id: m.id,
-            owner: "openai".to_string(),
-            created: None,
-            context_window: None,
-        }).collect())
+
+        Ok(model_list
+            .data
+            .into_iter()
+            .map(|m| RuntimeModelInfo {
+                id: m.id,
+                owner: "openai".to_string(),
+                created: None,
+                context_window: None,
+            })
+            .collect())
     }
 }
 
@@ -403,9 +429,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn create_with_default_url() {
-        let p = OpenAiProvider::new("sk-test".to_string());
-        assert_eq!(p.base_url(), "https://api.openai.com/v1");
+    fn create_with_base_url() {
+        let p = OpenAiProvider::with_base_url(
+            Some("sk-test".to_string()),
+            consts::OPENAI_BASE_URL.to_string(),
+        );
+        assert_eq!(p.base_url(), consts::OPENAI_BASE_URL);
     }
 
     #[test]
@@ -417,16 +446,27 @@ mod tests {
         assert_eq!(p.base_url(), "http://localhost:8080");
     }
 
+    #[test]
+    fn ollama_uses_local_address() {
+        let p = OpenAiProvider::ollama();
+        assert!(p.base_url().starts_with("http://localhost"));
+        assert!(p.api_key.is_none());
+    }
+
     #[tokio::test]
     #[ignore = "Requires network access"]
-    async fn complete_returns_not_implemented() {
-        let p = OpenAiProvider::new("sk-test".to_string());
+    async fn complete_returns_error_without_valid_key() {
+        let p = OpenAiProvider::with_base_url(
+            Some("sk-invalid".to_string()),
+            consts::OPENAI_BASE_URL.to_string(),
+        );
         let req = CompletionRequest {
             model: "gpt-4".to_string(),
             messages: vec![],
             max_tokens: None,
             temperature: None,
             stream: false,
+            tools: None,
         };
         let result = p.complete("test-session", &req).await;
         assert!(result.is_err());

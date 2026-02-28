@@ -1,6 +1,5 @@
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::time::Duration;
 
 use anyhow::{Result, bail};
 use futures_util::stream;
@@ -8,8 +7,9 @@ use futures_util::stream;
 use crate::middleware::storage;
 use crate::providers::{
     BoxStream, ChatMessage, Choice, CompletionRequest, CompletionResponse, EmbeddingRequest,
-    EmbeddingResponse, Provider, RuntimeModelInfo, StreamEvent, Usage,
+    EmbeddingResponse, Provider, RuntimeModelInfo, StreamEvent, ToolCall, ToolCallFunction, Usage,
 };
+use crate::providers::{consts, shared};
 
 /// Configuration for the local llama.cpp inference engine.
 #[derive(Debug, Clone)]
@@ -41,10 +41,7 @@ impl LlamaCppProvider {
     /// Create a new llama.cpp provider with the given configuration.
     pub fn new(config: LlamaCppConfig) -> Self {
         Self {
-            client: reqwest::Client::builder()
-                .timeout(Duration::from_secs(120))
-                .build()
-                .unwrap_or_default(),
+            client: shared::build_http_client(consts::HTTP_TIMEOUT),
             config,
         }
     }
@@ -55,15 +52,12 @@ impl LlamaCppProvider {
             config: LlamaCppConfig {
                 model_path: path.into(),
                 server_path: None,
-                context_size: 4096,
+                context_size: consts::LLAMACPP_DEFAULT_CONTEXT_SIZE,
                 gpu_layers: None,
                 threads: None,
                 server_url: None,
             },
-            client: reqwest::Client::builder()
-                .timeout(Duration::from_secs(120))
-                .build()
-                .unwrap_or_default(),
+            client: shared::build_http_client(consts::HTTP_TIMEOUT),
         }
     }
 
@@ -73,15 +67,12 @@ impl LlamaCppProvider {
             config: LlamaCppConfig {
                 model_path: PathBuf::new(),
                 server_path: None,
-                context_size: 4096,
+                context_size: consts::LLAMACPP_DEFAULT_CONTEXT_SIZE,
                 gpu_layers: None,
                 threads: None,
                 server_url: Some(url.clone()),
             },
-            client: reqwest::Client::builder()
-                .timeout(Duration::from_secs(120))
-                .build()
-                .unwrap_or_default(),
+            client: shared::build_http_client(consts::HTTP_TIMEOUT),
         }
     }
 
@@ -104,7 +95,7 @@ impl LlamaCppProvider {
     }
 
     // -----------------------------------------------------------------------
-    // Process Management (Task 3)
+    // Process Management
     // -----------------------------------------------------------------------
 
     /// Spawn a local `llama-server` process using the current configuration.
@@ -235,10 +226,7 @@ impl LlamaCppProvider {
 
     fn prepare_request(&self, request: &CompletionRequest, stream: bool) -> serde_json::Value {
         let mut body = serde_json::json!({
-            "messages": request.messages.iter().map(|m| serde_json::json!({
-                "role": m.role,
-                "content": m.content
-            })).collect::<Vec<_>>(),
+            "messages": request.messages.iter().map(shared::message_to_json).collect::<Vec<_>>(),
             "stream": stream,
         });
 
@@ -248,8 +236,50 @@ impl LlamaCppProvider {
         if let Some(temperature) = request.temperature {
             body["temperature"] = serde_json::json!(temperature);
         }
+        if let Some(tools) = request.tools.as_ref().filter(|t| !t.is_empty()) {
+            body["tools"] =
+                serde_json::Value::Array(tools.iter().map(shared::tool_to_json).collect());
+        }
 
         body
+    }
+
+    fn parse_tool_calls(v: &serde_json::Value) -> Option<Vec<ToolCall>> {
+        let arr = v.as_array()?;
+        let mut out = Vec::new();
+        for tc in arr {
+            let name = tc
+                .get("function")
+                .and_then(|f| f.get("name"))
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            if name.is_empty() {
+                continue;
+            }
+            let id = tc
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let call_type = tc
+                .get("type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("function")
+                .to_string();
+            let arguments = tc
+                .get("function")
+                .and_then(|f| f.get("arguments"))
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            out.push(ToolCall {
+                id,
+                call_type,
+                function: ToolCallFunction { name, arguments },
+            });
+        }
+        if out.is_empty() { None } else { Some(out) }
     }
 
     fn parse_response(&self, json: serde_json::Value) -> Result<CompletionResponse> {
@@ -289,6 +319,15 @@ impl LlamaCppProvider {
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string(),
+                tool_calls: Self::parse_tool_calls(&message_json["tool_calls"]),
+                tool_call_id: message_json
+                    .get("tool_call_id")
+                    .and_then(|v| v.as_str())
+                    .map(ToString::to_string),
+                name: message_json
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .map(ToString::to_string),
             };
             let finish_reason = choice_json
                 .get("finish_reason")
@@ -328,19 +367,15 @@ impl Provider for LlamaCppProvider {
         let url = format!("{}/v1/chat/completions", self.server_url());
         let body = self.prepare_request(request, false);
 
-        let response = self
-            .client
-            .post(&url)
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let error_text = response.text().await.unwrap_or_default();
-            bail!("llama.cpp API error: HTTP {} - {}", status, error_text);
-        }
+        let response = shared::check_status(
+            self.client
+                .post(&url)
+                .header("Content-Type", "application/json")
+                .json(&body)
+                .send()
+                .await?,
+        )
+        .await?;
 
         let json: serde_json::Value = response.json().await?;
         self.parse_response(json)
@@ -354,82 +389,115 @@ impl Provider for LlamaCppProvider {
         let url = format!("{}/v1/chat/completions", self.server_url());
         let body = self.prepare_request(request, true);
 
-        let response = self
-            .client
-            .post(&url)
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let error_text = response.text().await.unwrap_or_default();
-            bail!("llama.cpp API error: HTTP {} - {}", status, error_text);
-        }
+        let response = shared::check_status(
+            self.client
+                .post(&url)
+                .header("Content-Type", "application/json")
+                .json(&body)
+                .send()
+                .await?,
+        )
+        .await?;
 
         let event_stream = response.bytes_stream();
 
-        let stream = stream::unfold(event_stream, |mut stream| async move {
-            use futures_util::stream::StreamExt;
+        let stream = stream::unfold(
+            (event_stream, Vec::<ToolCall>::new()),
+            |(mut stream, mut pending_tool_calls)| async move {
+                use futures_util::stream::StreamExt;
 
-            while let Some(chunk_result) = stream.next().await {
-                match chunk_result {
-                    Ok(chunk) => {
-                        let text = String::from_utf8_lossy(&chunk);
-                        for line in text.lines() {
-                            let line = line.trim();
-                            if line.is_empty() || !line.starts_with("data: ") {
-                                continue;
-                            }
+                while let Some(chunk_result) = stream.next().await {
+                    match chunk_result {
+                        Ok(chunk) => {
+                            let text = String::from_utf8_lossy(&chunk);
+                            for line in text.lines() {
+                                let data = match shared::sse_data(line) {
+                                    Some(d) => d,
+                                    None => continue,
+                                };
+                                if data == "[DONE]" {
+                                    if !pending_tool_calls.is_empty() {
+                                        let ready = std::mem::take(&mut pending_tool_calls);
+                                        return Some((
+                                            Ok(StreamEvent::ToolCalls { tool_calls: ready }),
+                                            (stream, pending_tool_calls),
+                                        ));
+                                    }
+                                    return Some((
+                                        Ok(StreamEvent::Done),
+                                        (stream, pending_tool_calls),
+                                    ));
+                                }
 
-                            let data = &line[6..]; // Skip "data: "
-                            if data == "[DONE]" {
-                                return Some((Ok(StreamEvent::Done), stream));
-                            }
-
-                            match serde_json::from_str::<serde_json::Value>(data) {
-                                Ok(json) => {
-                                    if let Some(choices) =
-                                        json.get("choices").and_then(|v| v.as_array())
-                                        && let Some(choice) = choices.first()
-                                    {
-                                        if let Some(delta) = choice.get("delta")
-                                            && let Some(content) = delta.get("content")
-                                            && let Some(content_str) = content.as_str()
-                                            && !content_str.is_empty()
+                                match serde_json::from_str::<serde_json::Value>(data) {
+                                    Ok(json) => {
+                                        if let Some(choices) =
+                                            json.get("choices").and_then(|v| v.as_array())
+                                            && let Some(choice) = choices.first()
                                         {
-                                            return Some((
-                                                Ok(StreamEvent::Delta {
-                                                    content: content_str.to_string(),
-                                                }),
-                                                stream,
-                                            ));
-                                        }
-                                        if let Some(finish_reason) = choice.get("finish_reason")
-                                            && finish_reason.is_string()
-                                        {
-                                            return Some((Ok(StreamEvent::Done), stream));
+                                            if let Some(delta) = choice.get("delta")
+                                                && let Some(content) = delta.get("content")
+                                                && let Some(content_str) = content.as_str()
+                                                && !content_str.is_empty()
+                                            {
+                                                return Some((
+                                                    Ok(StreamEvent::Delta {
+                                                        content: content_str.to_string(),
+                                                    }),
+                                                    (stream, pending_tool_calls),
+                                                ));
+                                            }
+                                            if let Some(delta) = choice.get("delta")
+                                                && let Some(tcs) = delta
+                                                    .get("tool_calls")
+                                                    .and_then(|v| v.as_array())
+                                            {
+                                                shared::merge_tool_call_deltas(
+                                                    &mut pending_tool_calls,
+                                                    tcs,
+                                                );
+                                            }
+                                            if let Some(finish_reason) = choice.get("finish_reason")
+                                                && finish_reason.as_str().is_some()
+                                            {
+                                                if !pending_tool_calls.is_empty() {
+                                                    let ready =
+                                                        std::mem::take(&mut pending_tool_calls);
+                                                    return Some((
+                                                        Ok(StreamEvent::ToolCalls {
+                                                            tool_calls: ready,
+                                                        }),
+                                                        (stream, pending_tool_calls),
+                                                    ));
+                                                }
+                                                return Some((
+                                                    Ok(StreamEvent::Done),
+                                                    (stream, pending_tool_calls),
+                                                ));
+                                            }
                                         }
                                     }
-                                }
-                                Err(e) => {
-                                    return Some((
-                                        Err(anyhow::anyhow!("Failed to parse SSE: {}", e)),
-                                        stream,
-                                    ));
+                                    Err(e) => {
+                                        return Some((
+                                            Err(anyhow::anyhow!("Failed to parse SSE: {}", e)),
+                                            (stream, pending_tool_calls),
+                                        ));
+                                    }
                                 }
                             }
                         }
-                    }
-                    Err(e) => {
-                        return Some((Err(anyhow::anyhow!("Stream error: {}", e)), stream));
+                        Err(e) => {
+                            return Some((
+                                Err(anyhow::anyhow!("Stream error: {}", e)),
+                                (stream, pending_tool_calls),
+                            ));
+                        }
                     }
                 }
-            }
 
-            Some((Ok(StreamEvent::Done), stream))
-        });
+                Some((Ok(StreamEvent::Done), (stream, pending_tool_calls)))
+            },
+        );
 
         Ok(Box::pin(stream))
     }
@@ -445,19 +513,15 @@ impl Provider for LlamaCppProvider {
             "content": request.input.join("\n"),
         });
 
-        let response = self
-            .client
-            .post(&url)
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let error_text = response.text().await.unwrap_or_default();
-            bail!("llama.cpp API error: HTTP {} - {}", status, error_text);
-        }
+        let response = shared::check_status(
+            self.client
+                .post(&url)
+                .header("Content-Type", "application/json")
+                .json(&body)
+                .send()
+                .await?,
+        )
+        .await?;
 
         let json: serde_json::Value = response.json().await?;
 
@@ -485,7 +549,7 @@ impl Provider for LlamaCppProvider {
     }
 
     async fn list_models(&self) -> anyhow::Result<Vec<RuntimeModelInfo>> {
-        // Task 4: Try to fetch from server first
+        // Try to fetch from server first
         let server_url = self.server_url();
         let models_url = format!("{}/v1/models", server_url);
 
@@ -502,12 +566,16 @@ impl Provider for LlamaCppProvider {
             }
 
             if let Ok(json) = response.json::<ModelsResponse>().await {
-                let models: Vec<RuntimeModelInfo> = json.data.into_iter().map(|m| RuntimeModelInfo {
-                    id: m.id,
-                    owner: "llamacpp".to_string(),
-                    created: None,
-                    context_window: None,
-                }).collect();
+                let models: Vec<RuntimeModelInfo> = json
+                    .data
+                    .into_iter()
+                    .map(|m| RuntimeModelInfo {
+                        id: m.id,
+                        owner: "llamacpp".to_string(),
+                        created: None,
+                        context_window: None,
+                    })
+                    .collect();
                 if !models.is_empty() {
                     return Ok(models);
                 }
@@ -575,6 +643,7 @@ mod tests {
             max_tokens: None,
             temperature: None,
             stream: false,
+            tools: None,
         };
         assert!(p.complete("test-session", &req).await.is_err());
     }

@@ -1,0 +1,6 @@
+"helper.title" = "Demande de Capacité IA";
+"helper.instruction_format" = "%@ souhaite utiliser les capacités d'IA. Approuver ?";
+"helper.content" = "Cette demande est envoyée par le service local de gestion des capacités d'IA.";
+"helper.allow" = "Autoriser";
+"helper.cancel" = "Annuler";
+"helper.default_requester" = "Une application";

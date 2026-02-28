@@ -13,6 +13,7 @@
 //! Note: This is a background service with no CLI interface.
 //! All interaction is done through platform-specific IPC.
 
+pub mod interfaces;
 pub mod middleware;
 pub mod providers;
 
@@ -30,11 +31,6 @@ impl Shutdown {
         Self {
             flag: Arc::new(AtomicBool::new(false)),
         }
-    }
-
-    #[allow(dead_code)]
-    fn request(&self) {
-        self.flag.store(true, Ordering::Relaxed);
     }
 
     fn handle(&self) -> ShutdownHandle {
@@ -68,14 +64,13 @@ fn init_logging() {
 
     #[cfg(target_os = "linux")]
     {
-        // Try systemd journal first, fall back to tracing
+        // Try systemd journal first, fall back to console-only tracing.
         if let Ok(journal_layer) = systemd_journal_logger::JournalLog::new() {
             tracing_subscriber::registry()
                 .with(filter)
-                .with(fmt_layer)
-                // Note: We keep both for now, or just journal if preferred
+                .with(journal_layer)
                 .init();
-            tracing::info!("Logging initialized (Journal + Console)");
+            tracing::info!("Logging initialized (Journal)");
         } else {
             tracing_subscriber::registry()
                 .with(filter)
@@ -102,13 +97,39 @@ async fn run_service(shutdown: ShutdownHandle) -> Result<()> {
 
     #[cfg(target_os = "macos")]
     {
-        // We assume firebox_service::interfaces::xpc exists and provides run_listener
-        // If not, this would be a build error.
+        // Run the XPC listener on a dedicated OS thread so it can block forever.
+        std::thread::spawn(|| {
+            crate::interfaces::xpc::run_listener();
+        });
+        tracing::info!("XPC listener started");
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        tokio::spawn(async {
+            if let Err(e) = crate::interfaces::dbus::run_listener().await {
+                tracing::error!(error = %e, "Linux IPC listener failed");
+            }
+        });
+        tracing::info!("Linux IPC listener started");
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        // Run the COM listener on a dedicated OS thread so it can block forever,
+        // mirroring the macOS XPC pattern.
+        std::thread::spawn(|| {
+            crate::interfaces::com::run_listener();
+        });
+        tracing::info!("Windows COM listener started");
     }
 
     // Wait for shutdown signal
     while !shutdown.is_requested() {
-        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+        tokio::time::sleep(tokio::time::Duration::from_secs(
+            crate::providers::consts::SERVICE_HEARTBEAT_SECS,
+        ))
+        .await;
     }
 
     tracing::info!("FireBox Service shutting down");

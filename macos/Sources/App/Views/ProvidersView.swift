@@ -2,8 +2,8 @@ import SwiftUI
 
 struct ProvidersView: View {
     @EnvironmentObject var appState: AppState
-    @State private var showingAddProvider = false
-    @State private var selectedProvider: Provider?
+    @State private var showingAddSheet = false
+    @State private var confirmDelete: Provider?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -14,7 +14,7 @@ struct ProvidersView: View {
 
                 Spacer()
 
-                Button(action: { showingAddProvider = true }) {
+                Button(action: { showingAddSheet = true }) {
                     Label("Add Provider", systemImage: "plus")
                 }
                 .buttonStyle(.borderedProminent)
@@ -39,36 +39,40 @@ struct ProvidersView: View {
             } else {
                 List {
                     ForEach(appState.providers) { provider in
-                        ProviderRow(provider: provider, onEdit: {
-                            selectedProvider = provider
-                        }, onDelete: {
-                            Task {
-                                _ = await ServiceClient.shared.removeProvider(providerId: provider.providerId)
-                                await appState.refreshData()
-                            }
+                        ProviderRow(provider: provider, onDelete: {
+                            confirmDelete = provider
                         })
                     }
                 }
                 .listStyle(.inset)
             }
         }
-        .sheet(isPresented: $showingAddProvider) {
-            AddProviderSheet(isPresented: $showingAddProvider)
+        .sheet(isPresented: $showingAddSheet) {
+            AddProviderSheet(isPresented: $showingAddSheet)
                 .environmentObject(appState)
         }
-        .sheet(item: $selectedProvider) { provider in
-            EditProviderSheet(provider: provider, isPresented: .init(
-                get: { selectedProvider != nil },
-                set: { if !$0 { selectedProvider = nil } }
-            ))
-            .environmentObject(appState)
+        .alert("Delete Provider", isPresented: .init(
+            get: { confirmDelete != nil },
+            set: { if !$0 { confirmDelete = nil } }
+        )) {
+            Button("Cancel", role: .cancel) { confirmDelete = nil }
+            Button("Delete", role: .destructive) {
+                if let p = confirmDelete {
+                    Task {
+                        _ = await ServiceClient.shared.removeProvider(providerId: p.providerId)
+                        await appState.refreshData()
+                    }
+                }
+                confirmDelete = nil
+            }
+        } message: {
+            Text("Remove \"\(confirmDelete?.displayName ?? "")\"? This cannot be undone.")
         }
     }
 }
 
 struct ProviderRow: View {
     let provider: Provider
-    let onEdit: () -> Void
     let onDelete: () -> Void
 
     var body: some View {
@@ -79,214 +83,293 @@ struct ProviderRow: View {
                 .frame(width: 40)
 
             VStack(alignment: .leading, spacing: 4) {
-                Text(provider.name)
+                Text(provider.displayName)
                     .font(.headline)
-
-                Text(providerTypeText)
+                Text(provider.providerType)
                     .font(.caption)
                     .foregroundColor(.secondary)
-
-                if let url = provider.baseUrl {
-                    Text(url)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .lineLimit(1)
-                } else if let path = provider.localPath {
-                    Text(path)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .lineLimit(1)
-                }
             }
 
             Spacer()
 
-            HStack(spacing: 8) {
-                Button(action: onEdit) {
-                    Image(systemName: "pencil")
-                }
-                .buttonStyle(.plain)
+            Text(provider.providerId)
+                .font(.caption)
+                .foregroundColor(.secondary)
 
-                Button(action: onDelete) {
-                    Image(systemName: "trash")
-                        .foregroundColor(.red)
-                }
-                .buttonStyle(.plain)
+            Button(role: .destructive, action: onDelete) {
+                Image(systemName: "trash")
             }
+            .buttonStyle(.borderless)
         }
         .padding(.vertical, 8)
     }
 
     private var providerIcon: String {
-        switch provider.type {
-        case .apiKey: return "key.fill"
-        case .oauth: return "person.badge.key.fill"
-        case .local: return "externaldrive.fill"
+        switch provider.providerType {
+        case "openai": return "brain"
+        case "anthropic": return "brain.head.profile"
+        case "copilot": return "person.badge.key"
+        case "dashscope": return "cloud"
+        case "llamacpp": return "desktopcomputer"
+        case "ollama": return "server.rack"
+        default: return "questionmark.circle"
         }
     }
 
     private var providerColor: Color {
-        switch provider.type {
-        case .apiKey: return .blue
-        case .oauth: return .green
-        case .local: return .orange
+        switch provider.providerType {
+        case "openai": return .green
+        case "anthropic": return .orange
+        case "copilot": return .blue
+        case "dashscope": return .purple
+        case "llamacpp": return .gray
+        case "ollama": return .teal
+        default: return .secondary
         }
     }
+}
 
-    private var providerTypeText: String {
-        switch provider.type {
-        case .apiKey: return "API Key"
-        case .oauth: return "OAuth"
-        case .local: return "Local"
-        }
-    }
+// MARK: - Add Provider
+
+enum AddProviderMode: String, CaseIterable {
+    case apiKey = "API Key"
+    case oauth = "OAuth"
+    case local = "Local"
 }
 
 struct AddProviderSheet: View {
-    @EnvironmentObject var appState: AppState
     @Binding var isPresented: Bool
-    @State private var providerId = ""
-    @State private var name = ""
-    @State private var selectedType: ProviderType = .apiKey
-    @State private var baseUrl = ""
-    @State private var localPath = ""
+    @EnvironmentObject var appState: AppState
+    @State private var mode: AddProviderMode = .apiKey
 
     var body: some View {
-        VStack(spacing: 20) {
+        VStack(spacing: 0) {
             Text("Add Provider")
                 .font(.title2)
                 .bold()
+                .padding()
 
-            Form {
-                TextField("Provider ID (e.g., 'openai', 'anthropic')", text: $providerId)
-
-                TextField("Display Name", text: $name)
-
-                Picker("Type", selection: $selectedType) {
-                    Text("API Key").tag(ProviderType.apiKey)
-                    Text("OAuth").tag(ProviderType.oauth)
-                    Text("Local").tag(ProviderType.local)
-                }
-
-                if selectedType == .apiKey || selectedType == .oauth {
-                    TextField("Base URL", text: $baseUrl)
-                        .textContentType(.URL)
-                }
-
-                if selectedType == .local {
-                    TextField("Local Path", text: $localPath)
+            Picker("Type", selection: $mode) {
+                ForEach(AddProviderMode.allCases, id: \.self) { m in
+                    Text(m.rawValue).tag(m)
                 }
             }
-            .formStyle(.grouped)
+            .pickerStyle(.segmented)
+            .padding(.horizontal)
 
-            HStack {
-                Button("Cancel") {
-                    isPresented = false
-                }
-                .keyboardShortcut(.cancelAction)
+            Divider()
+                .padding(.vertical, 8)
 
-                Spacer()
-
-                Button("Add") {
-                    Task {
-                        let provider = Provider(
-                            providerId: providerId,
-                            name: name,
-                            type: selectedType,
-                            baseUrl: baseUrl.isEmpty ? nil : baseUrl,
-                            localPath: localPath.isEmpty ? nil : localPath
-                        )
-                        _ = await ServiceClient.shared.addProvider(provider)
-                        await appState.refreshData()
-                        isPresented = false
-                    }
-                }
-                .keyboardShortcut(.defaultAction)
-                .disabled(providerId.isEmpty || name.isEmpty)
+            switch mode {
+            case .apiKey:
+                AddApiKeyProviderForm(isPresented: $isPresented)
+                    .environmentObject(appState)
+            case .oauth:
+                AddOAuthProviderForm(isPresented: $isPresented)
+                    .environmentObject(appState)
+            case .local:
+                AddLocalProviderForm(isPresented: $isPresented)
+                    .environmentObject(appState)
             }
         }
-        .padding()
-        .frame(width: 500, height: 450)
+        .frame(width: 500, height: 420)
     }
 }
 
-struct EditProviderSheet: View {
-    let provider: Provider
+// MARK: - API Key Flow
+
+struct AddApiKeyProviderForm: View {
     @Binding var isPresented: Bool
     @EnvironmentObject var appState: AppState
-    @State private var name: String
-    @State private var baseUrl: String
-    @State private var localPath: String
 
-    init(provider: Provider, isPresented: Binding<Bool>) {
-        self.provider = provider
-        self._isPresented = isPresented
-        self._name = State(initialValue: provider.name)
-        self._baseUrl = State(initialValue: provider.baseUrl ?? "")
-        self._localPath = State(initialValue: provider.localPath ?? "")
-    }
+    @State private var name = ""
+    @State private var providerType = "openai"
+    @State private var apiKey = ""
+    @State private var baseUrl = ""
+
+    private let providerTypes = ["openai", "anthropic", "ollama"]
 
     var body: some View {
-        VStack(spacing: 20) {
-            Text("Edit Provider")
-                .font(.title2)
-                .bold()
-
-            Form {
-                TextField("Provider ID", text: .constant(provider.providerId))
-                    .disabled(true)
-
-                TextField("Display Name", text: $name)
-
-                Text("Type: \(providerTypeText)")
-                    .foregroundColor(.secondary)
-
-                if provider.type == .apiKey || provider.type == .oauth {
-                    TextField("Base URL", text: $baseUrl)
-                        .textContentType(.URL)
-                }
-
-                if provider.type == .local {
-                    TextField("Local Path", text: $localPath)
-                }
+        Form {
+            TextField("Name", text: $name)
+            Picker("Provider", selection: $providerType) {
+                ForEach(providerTypes, id: \.self) { Text($0) }
             }
-            .formStyle(.grouped)
+            SecureField("API Key", text: $apiKey)
+            TextField("Base URL (optional)", text: $baseUrl)
+        }
+        .formStyle(.grouped)
+        .padding(.horizontal)
 
-            HStack {
-                Button("Cancel") {
+        Spacer()
+
+        HStack {
+            Button("Cancel") { isPresented = false }
+                .keyboardShortcut(.cancelAction)
+            Spacer()
+            Button("Add") {
+                Task {
+                    _ = await ServiceClient.shared.addApiKeyProvider(
+                        name: name,
+                        providerType: providerType,
+                        apiKey: apiKey,
+                        baseUrl: baseUrl.isEmpty ? nil : baseUrl
+                    )
+                    await appState.refreshData()
                     isPresented = false
                 }
-                .keyboardShortcut(.cancelAction)
-
-                Spacer()
-
-                Button("Save") {
-                    Task {
-                        let updatedProvider = Provider(
-                            providerId: provider.providerId,
-                            name: name,
-                            type: provider.type,
-                            baseUrl: baseUrl.isEmpty ? nil : baseUrl,
-                            localPath: localPath.isEmpty ? nil : localPath
-                        )
-                        _ = await ServiceClient.shared.addProvider(updatedProvider)
-                        await appState.refreshData()
-                        isPresented = false
-                    }
-                }
-                .keyboardShortcut(.defaultAction)
-                .disabled(name.isEmpty)
             }
+            .keyboardShortcut(.defaultAction)
+            .disabled(name.isEmpty || apiKey.isEmpty)
         }
         .padding()
-        .frame(width: 500, height: 450)
+    }
+}
+
+// MARK: - OAuth Flow
+
+struct AddOAuthProviderForm: View {
+    @Binding var isPresented: Bool
+    @EnvironmentObject var appState: AppState
+
+    @State private var name = ""
+    @State private var providerType = "copilot"
+    @State private var challenge: OAuthChallenge?
+    @State private var polling = false
+    @State private var errorMessage: String?
+
+    private let providerTypes = ["copilot", "dashscope"]
+
+    var body: some View {
+        VStack(spacing: 16) {
+            if let challenge = challenge {
+                // Step 2: Show device code
+                VStack(spacing: 12) {
+                    Text("Enter this code:")
+                        .font(.headline)
+                    Text(challenge.userCode)
+                        .font(.system(.largeTitle, design: .monospaced))
+                        .textSelection(.enabled)
+                    Text("at")
+                        .foregroundColor(.secondary)
+                    Link(challenge.verificationUri, destination: URL(string: challenge.verificationUri)!)
+                        .font(.callout)
+
+                    if polling {
+                        ProgressView("Waiting for authorization…")
+                            .padding(.top)
+                    }
+                }
+                .padding()
+            } else {
+                // Step 1: Pick provider
+                Form {
+                    TextField("Name", text: $name)
+                    Picker("Provider", selection: $providerType) {
+                        ForEach(providerTypes, id: \.self) { Text($0) }
+                    }
+                }
+                .formStyle(.grouped)
+                .padding(.horizontal)
+            }
+
+            if let err = errorMessage {
+                Text(err)
+                    .foregroundColor(.red)
+                    .font(.caption)
+            }
+
+            Spacer()
+
+            HStack {
+                Button("Cancel") { isPresented = false }
+                    .keyboardShortcut(.cancelAction)
+                Spacer()
+                if challenge == nil {
+                    Button("Start") {
+                        Task { await startOAuth() }
+                    }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(name.isEmpty)
+                }
+            }
+            .padding()
+        }
     }
 
-    private var providerTypeText: String {
-        switch provider.type {
-        case .apiKey: return "API Key"
-        case .oauth: return "OAuth"
-        case .local: return "Local"
+    private func startOAuth() async {
+        errorMessage = nil
+        guard let ch = await ServiceClient.shared.addOAuthProvider(name: name, providerType: providerType) else {
+            errorMessage = "Failed to start OAuth flow."
+            return
         }
+        challenge = ch
+        polling = true
+
+        // Open verification URL in browser.
+        if let url = URL(string: ch.verificationUri) {
+            NSWorkspace.shared.open(url)
+        }
+
+        // Poll for completion.
+        let interval = max(ch.interval, 5)
+        for _ in 0..<(ch.expiresIn / interval) {
+            try? await Task.sleep(for: .seconds(interval))
+            let ok = await ServiceClient.shared.completeOAuth(providerType: providerType, deviceCode: ch.deviceCode)
+            if ok {
+                await appState.refreshData()
+                isPresented = false
+                return
+            }
+        }
+        polling = false
+        errorMessage = "Authorization timed out."
+    }
+}
+
+// MARK: - Local Flow
+
+struct AddLocalProviderForm: View {
+    @Binding var isPresented: Bool
+    @EnvironmentObject var appState: AppState
+
+    @State private var name = ""
+    @State private var modelPath = ""
+
+    var body: some View {
+        Form {
+            TextField("Name", text: $name)
+            HStack {
+                TextField("Model Path (.gguf)", text: $modelPath)
+                Button("Browse…") {
+                    let panel = NSOpenPanel()
+                    panel.allowedContentTypes = [.data]
+                    panel.allowsMultipleSelection = false
+                    if panel.runModal() == .OK, let url = panel.url {
+                        modelPath = url.path
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .padding(.horizontal)
+
+        Spacer()
+
+        HStack {
+            Button("Cancel") { isPresented = false }
+                .keyboardShortcut(.cancelAction)
+            Spacer()
+            Button("Add") {
+                Task {
+                    _ = await ServiceClient.shared.addLocalProvider(name: name, modelPath: modelPath)
+                    await appState.refreshData()
+                    isPresented = false
+                }
+            }
+            .keyboardShortcut(.defaultAction)
+            .disabled(name.isEmpty || modelPath.isEmpty)
+        }
+        .padding()
     }
 }
