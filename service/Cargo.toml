@@ -45,7 +45,7 @@ libc.workspace = true
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-service.workspace = true
 windows-core = "0.58"
-windows = { version = "0.58", features = [
+windows = { version = "0.62", features = [
     "implement",
     "Win32_Foundation",
     "Win32_System_Com",
