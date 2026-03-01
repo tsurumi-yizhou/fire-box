@@ -61,7 +61,7 @@ jobs:
           cp target/release/firebox-service build/linux/FireBox/usr/local/bin/
 
       - name: Upload Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: FireBox-Linux
           path: build/linux/FireBox

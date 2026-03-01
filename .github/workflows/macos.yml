@@ -59,7 +59,7 @@ jobs:
           cp macos/com.firebox.service.plist "$APP_DIR/Contents/Library/LaunchDaemons/"
 
       - name: Upload Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: FireBox-macOS
           path: build/macos/FireBox.app

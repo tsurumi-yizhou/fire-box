@@ -51,7 +51,7 @@ jobs:
           cp target/${{ matrix.arch == 'ARM64' && 'aarch64-pc-windows-msvc' || 'x86_64-pc-windows-msvc' }}/release/firebox-service.exe build/windows/FireBox/
 
       - name: Upload Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: FireBox-Windows-${{ matrix.arch }}
           path: build/windows/FireBox
