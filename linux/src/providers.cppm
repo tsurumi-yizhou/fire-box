@@ -1,22 +1,16 @@
-#pragma once
-
-#include "dbus_client.hpp"
+module;
 
 #include <adwaita.h>
 #include <gtk/gtk.h>
-#include <libintl.h>
 
 #include <string>
 #include <vector>
 
-#define _(S) gettext(S)
+export module providers;
+import dbus_client;
+import i18n;
 
-/// Providers view — lists configured LLM providers with add/delete actions.
-///
-/// GtkStack pages:
-///   - "empty" : Adw.StatusPage placeholder
-///   - "list"  : Adw.PreferencesGroup with one Adw.ActionRow per provider
-class ProvidersView {
+export class ProvidersView {
 public:
     ProvidersView() {
         scrolled_ = gtk_scrolled_window_new();
@@ -28,7 +22,6 @@ public:
                                       GTK_STACK_TRANSITION_TYPE_CROSSFADE);
         gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scrolled_), stack_);
 
-        // ---- empty state --------------------------------------------------
         GtkWidget* empty_page = adw_status_page_new();
         adw_status_page_set_icon_name(ADW_STATUS_PAGE(empty_page),
                                       "application-x-addon-symbolic");
@@ -38,7 +31,6 @@ public:
             _("Add a provider to start using Fire Box."));
         gtk_stack_add_named(GTK_STACK(stack_), empty_page, "empty");
 
-        // ---- list state ---------------------------------------------------
         GtkWidget* list_clamp = adw_clamp_new();
         adw_clamp_set_maximum_size(ADW_CLAMP(list_clamp), 600);
 
@@ -60,20 +52,18 @@ public:
 
     GtkWidget* widget() const { return scrolled_; }
 
-    /// Refresh the provider list from the service.
-    void refresh(FireBoxDbusClient& client) {
-        // Remove old rows
+    Task refresh(FireBoxDbusClient* client) {
         for (auto* row : rows_) {
             adw_preferences_group_remove(ADW_PREFERENCES_GROUP(group_), row);
         }
         rows_.clear();
 
         try {
-            auto providers = client.list_providers();
+            auto providers = co_await client->list_providers();
 
             if (providers.empty()) {
                 gtk_stack_set_visible_child_name(GTK_STACK(stack_), "empty");
-                return;
+                co_return;
             }
 
             for (const auto& prov : providers) {
@@ -87,7 +77,6 @@ public:
                 adw_action_row_set_subtitle(ADW_ACTION_ROW(row),
                                             subtitle.c_str());
 
-                // Delete button suffix
                 GtkWidget* del_btn = gtk_button_new_from_icon_name(
                     "user-trash-symbolic");
                 gtk_widget_set_valign(del_btn, GTK_ALIGN_CENTER);
@@ -95,8 +84,7 @@ public:
                 gtk_widget_add_css_class(del_btn, "error");
                 gtk_widget_set_tooltip_text(del_btn, _("Delete provider"));
 
-                // Store provider id and view pointer in the button
-                auto* ctx = new DeleteContext{this, &client, prov.id};
+                auto* ctx = new DeleteContext{this, client, prov.id};
                 g_object_set_data_full(G_OBJECT(del_btn), "ctx", ctx,
                     [](gpointer p) { delete static_cast<DeleteContext*>(p); });
                 g_signal_connect(del_btn, "clicked",
@@ -114,12 +102,7 @@ public:
         }
     }
 
-    /// Show the "Add Provider" flow.
-    ///
-    /// First presents a choice dialog (API Key / OAuth / Local), then opens the
-    /// appropriate entry dialog.
-    void show_add_dialog(GtkWindow* parent, FireBoxDbusClient& client) {
-        // ---- Step 1: choose provider kind ---------------------------------
+    void show_add_dialog(GtkWindow* parent, FireBoxDbusClient* client) {
         AdwMessageDialog* chooser = ADW_MESSAGE_DIALOG(
             adw_message_dialog_new(parent,
                                    _("Add Provider"),
@@ -131,7 +114,7 @@ public:
         adw_message_dialog_set_default_response(chooser, "cancel");
         adw_message_dialog_set_close_response(chooser, "cancel");
 
-        auto* add_ctx = new AddContext{this, parent, &client};
+        auto* add_ctx = new AddContext{this, parent, client};
         g_signal_connect(chooser, "response",
                          G_CALLBACK(on_chooser_response), add_ctx);
         gtk_window_present(GTK_WINDOW(chooser));
@@ -143,10 +126,6 @@ private:
     GtkWidget* group_    = nullptr;
 
     std::vector<GtkWidget*> rows_;
-
-    // -----------------------------------------------------------------------
-    // Delete confirmation
-    // -----------------------------------------------------------------------
 
     struct DeleteContext {
         ProvidersView*     view;
@@ -174,7 +153,6 @@ private:
         adw_message_dialog_set_default_response(dlg, "cancel");
         adw_message_dialog_set_close_response(dlg, "cancel");
 
-        // Copy context for the response handler (button's ctx may outlive dialog)
         auto* confirm_ctx = new DeleteContext{ctx->view, ctx->client,
                                               ctx->provider_id};
         g_signal_connect(dlg, "response",
@@ -182,25 +160,27 @@ private:
         gtk_window_present(GTK_WINDOW(dlg));
     }
 
+    static Task do_delete(DeleteContext* ctx) {
+        try {
+            co_await ctx->client->delete_provider(ctx->provider_id);
+            co_await ctx->view->refresh(ctx->client);
+        } catch (const std::exception& e) {
+            // Cannot easily access dialog here so ignore UI error pop
+        }
+        delete ctx;
+    }
+
     static void on_delete_confirmed(AdwMessageDialog* dlg,
                                     const char* response,
                                     gpointer user_data) {
         auto* ctx = static_cast<DeleteContext*>(user_data);
         if (g_strcmp0(response, "delete") == 0 && ctx) {
-            try {
-                ctx->client->delete_provider(ctx->provider_id);
-                ctx->view->refresh(*ctx->client);
-            } catch (const std::exception& e) {
-                show_error(GTK_WINDOW(dlg), e.what());
-            }
+            do_delete(ctx); // Fire and forget Task
+        } else {
+            delete ctx;
         }
-        delete ctx;
         gtk_window_destroy(GTK_WINDOW(dlg));
     }
-
-    // -----------------------------------------------------------------------
-    // Add provider — chooser response
-    // -----------------------------------------------------------------------
 
     struct AddContext {
         ProvidersView*     view;
@@ -227,10 +207,6 @@ private:
         }
     }
 
-    // -----------------------------------------------------------------------
-    // API Key dialog
-    // -----------------------------------------------------------------------
-
     struct ApiKeyDialogWidgets {
         GtkWidget* name_entry;
         GtkWidget* type_combo;
@@ -253,34 +229,28 @@ private:
         adw_message_dialog_set_default_response(ADW_MESSAGE_DIALOG(dlg), "add");
         adw_message_dialog_set_close_response(ADW_MESSAGE_DIALOG(dlg), "cancel");
 
-        // Build extra content
         GtkWidget* box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
         gtk_widget_set_margin_start(box, 12);
         gtk_widget_set_margin_end(box, 12);
 
-        // Name entry
         GtkWidget* name_entry = gtk_entry_new();
         gtk_entry_set_placeholder_text(GTK_ENTRY(name_entry), _("Display name"));
         gtk_box_append(GTK_BOX(box), name_entry);
 
-        // Provider type combo
         const char* api_key_types[] = {"openai", "anthropic", "ollama", "vllm", nullptr};
         GtkWidget* type_combo = gtk_drop_down_new_from_strings(api_key_types);
         gtk_box_append(GTK_BOX(box), type_combo);
 
-        // API key entry
         GtkWidget* api_key_entry = gtk_password_entry_new();
         gtk_password_entry_set_show_peek_icon(GTK_PASSWORD_ENTRY(api_key_entry),
                                               TRUE);
         gtk_editable_set_text(GTK_EDITABLE(api_key_entry), "");
-        // Use a regular entry with placeholder as password entry doesn't have it
         GtkWidget* api_key_label = gtk_label_new(_("API Key"));
         gtk_widget_set_halign(api_key_label, GTK_ALIGN_START);
         gtk_widget_add_css_class(api_key_label, "caption");
         gtk_box_append(GTK_BOX(box), api_key_label);
         gtk_box_append(GTK_BOX(box), api_key_entry);
 
-        // Base URL entry
         GtkWidget* base_url_entry = gtk_entry_new();
         gtk_entry_set_placeholder_text(GTK_ENTRY(base_url_entry),
                                        _("Base URL (optional)"));
@@ -294,43 +264,43 @@ private:
                          G_CALLBACK(on_api_key_response), widgets);
         gtk_window_present(GTK_WINDOW(dlg));
     }
+    
+    static Task do_add_api_key(ApiKeyDialogWidgets* w) {
+        std::string name     = gtk_editable_get_text(GTK_EDITABLE(w->name_entry));
+        guint type_idx       = gtk_drop_down_get_selected(GTK_DROP_DOWN(w->type_combo));
+        std::string api_key  = gtk_editable_get_text(GTK_EDITABLE(w->api_key_entry));
+        std::string base_url = gtk_editable_get_text(GTK_EDITABLE(w->base_url_entry));
+
+        const char* type_slugs[] = {"openai", "anthropic", "ollama", "vllm"};
+        std::string ptype = (type_idx < 4) ? type_slugs[type_idx] : "openai";
+
+        try {
+            co_await w->ctx->client->add_api_key_provider(name, ptype, api_key, base_url);
+            co_await w->ctx->view->refresh(w->ctx->client);
+        } catch (const std::exception& e) {}
+        
+        delete w->ctx;
+        delete w;
+    }
 
     static void on_api_key_response(AdwMessageDialog* dlg,
                                     const char* response,
                                     gpointer user_data) {
         auto* w = static_cast<ApiKeyDialogWidgets*>(user_data);
         if (g_strcmp0(response, "add") == 0 && w && w->ctx) {
-            std::string name     = gtk_editable_get_text(GTK_EDITABLE(w->name_entry));
-            guint type_idx       = gtk_drop_down_get_selected(GTK_DROP_DOWN(w->type_combo));
-            std::string api_key  = gtk_editable_get_text(GTK_EDITABLE(w->api_key_entry));
-            std::string base_url = gtk_editable_get_text(GTK_EDITABLE(w->base_url_entry));
-
-            const char* type_slugs[] = {"openai", "anthropic", "ollama", "vllm"};
-            std::string ptype = (type_idx < 4) ? type_slugs[type_idx] : "openai";
-
-            try {
-                w->ctx->client->add_api_key_provider(name, ptype, api_key,
-                                                     base_url);
-                w->ctx->view->refresh(*w->ctx->client);
-            } catch (const std::exception& e) {
-                show_error(GTK_WINDOW(dlg), e.what());
-            }
-        }
-        if (w) {
+            do_add_api_key(w);
+        } else if (w) {
             delete w->ctx;
             delete w;
         }
         gtk_window_destroy(GTK_WINDOW(dlg));
     }
 
-    // -----------------------------------------------------------------------
-    // OAuth dialog
-    // -----------------------------------------------------------------------
-
     struct OAuthDialogWidgets {
         GtkWidget* name_entry;
         GtkWidget* type_combo;
         AddContext* ctx;
+        GtkWindow* parent_win;
     };
 
     static void show_oauth_dialog(AddContext* ctx) {
@@ -364,10 +334,28 @@ private:
 
         adw_message_dialog_set_extra_child(ADW_MESSAGE_DIALOG(dlg), box);
 
-        auto* widgets = new OAuthDialogWidgets{name_entry, type_combo, ctx};
+        auto* widgets = new OAuthDialogWidgets{name_entry, type_combo, ctx, ctx->parent};
         g_signal_connect(dlg, "response",
                          G_CALLBACK(on_oauth_start_response), widgets);
         gtk_window_present(GTK_WINDOW(dlg));
+    }
+    
+    static Task do_start_oauth(OAuthDialogWidgets* w) {
+        std::string name = gtk_editable_get_text(GTK_EDITABLE(w->name_entry));
+        guint type_idx   = gtk_drop_down_get_selected(GTK_DROP_DOWN(w->type_combo));
+
+        const char* oauth_slugs[] = {"copilot", "dashscope"};
+        std::string ptype = (type_idx < 2) ? oauth_slugs[type_idx] : "copilot";
+
+        try {
+            auto [provider_id, challenge] =
+                co_await w->ctx->client->add_oauth_provider(name, ptype);
+
+            show_device_code_dialog(w->ctx, provider_id, challenge);
+        } catch (const std::exception& e) {
+            delete w->ctx;
+        }
+        delete w;
     }
 
     static void on_oauth_start_response(AdwMessageDialog* dlg,
@@ -375,34 +363,14 @@ private:
                                         gpointer user_data) {
         auto* w = static_cast<OAuthDialogWidgets*>(user_data);
         if (g_strcmp0(response, "start") == 0 && w && w->ctx) {
-            std::string name = gtk_editable_get_text(GTK_EDITABLE(w->name_entry));
-            guint type_idx   = gtk_drop_down_get_selected(GTK_DROP_DOWN(w->type_combo));
-
-            const char* oauth_slugs[] = {"copilot", "dashscope"};
-            std::string ptype = (type_idx < 2) ? oauth_slugs[type_idx] : "copilot";
-
-            try {
-                auto [provider_id, challenge] =
-                    w->ctx->client->add_oauth_provider(name, ptype);
-
-                // Show device code dialog
-                gtk_window_destroy(GTK_WINDOW(dlg));
-                show_device_code_dialog(w->ctx, provider_id, challenge);
-                delete w;
-                return;
-
-            } catch (const std::exception& e) {
-                show_error(GTK_WINDOW(dlg), e.what());
-            }
-        }
-        if (w) {
+            do_start_oauth(w);
+        } else if (w) {
             delete w->ctx;
             delete w;
         }
         gtk_window_destroy(GTK_WINDOW(dlg));
     }
 
-    /// Show the device code to the user and wait for completion.
     static void show_device_code_dialog(AddContext* ctx,
                                         const std::string& provider_id,
                                         const OAuthChallenge& challenge) {
@@ -438,14 +406,8 @@ private:
                                         gpointer ud) {
             auto* dc = static_cast<DeviceCtx*>(ud);
             if (g_strcmp0(resp, "done") == 0 && dc && dc->add_ctx) {
-                try {
-                    dc->add_ctx->client->complete_oauth(dc->provider_id);
-                    dc->add_ctx->view->refresh(*dc->add_ctx->client);
-                } catch (const std::exception& e) {
-                    show_error(GTK_WINDOW(d), e.what());
-                }
-            }
-            if (dc) {
+                do_complete_oauth(dc);
+            } else if (dc) {
                 delete dc->add_ctx;
                 delete dc;
             }
@@ -454,10 +416,15 @@ private:
 
         gtk_window_present(GTK_WINDOW(dlg));
     }
-
-    // -----------------------------------------------------------------------
-    // Local model dialog
-    // -----------------------------------------------------------------------
+    
+    static Task do_complete_oauth(auto* dc) {
+        try {
+            co_await dc->add_ctx->client->complete_oauth(dc->provider_id);
+            co_await dc->add_ctx->view->refresh(dc->add_ctx->client);
+        } catch (const std::exception& e) {}
+        delete dc->add_ctx;
+        delete dc;
+    }
 
     struct LocalDialogWidgets {
         GtkWidget* name_entry;
@@ -499,33 +466,31 @@ private:
                          G_CALLBACK(on_local_response), widgets);
         gtk_window_present(GTK_WINDOW(dlg));
     }
+    
+    static Task do_add_local(LocalDialogWidgets* w) {
+        std::string name = gtk_editable_get_text(GTK_EDITABLE(w->name_entry));
+        std::string path = gtk_editable_get_text(GTK_EDITABLE(w->path_entry));
+        try {
+            co_await w->ctx->client->add_local_provider(name, path);
+            co_await w->ctx->view->refresh(w->ctx->client);
+        } catch (const std::exception& e) {}
+        delete w->ctx;
+        delete w;
+    }
 
     static void on_local_response(AdwMessageDialog* dlg,
                                   const char* response,
                                   gpointer user_data) {
         auto* w = static_cast<LocalDialogWidgets*>(user_data);
         if (g_strcmp0(response, "add") == 0 && w && w->ctx) {
-            std::string name = gtk_editable_get_text(GTK_EDITABLE(w->name_entry));
-            std::string path = gtk_editable_get_text(GTK_EDITABLE(w->path_entry));
-            try {
-                w->ctx->client->add_local_provider(name, path);
-                w->ctx->view->refresh(*w->ctx->client);
-            } catch (const std::exception& e) {
-                show_error(GTK_WINDOW(dlg), e.what());
-            }
-        }
-        if (w) {
+            do_add_local(w);
+        } else if (w) {
             delete w->ctx;
             delete w;
         }
         gtk_window_destroy(GTK_WINDOW(dlg));
     }
 
-    // -----------------------------------------------------------------------
-    // Utility
-    // -----------------------------------------------------------------------
-
-    /// Convert integer provider type to a display label.
     static std::string type_label(int type) {
         switch (type) {
             case 1: return "API Key";
@@ -534,18 +499,4 @@ private:
             default: return "Unknown";
         }
     }
-
-    static void show_error(GtkWindow* parent, const char* message) {
-        GtkWidget* err_dlg = adw_message_dialog_new(
-            parent, _("Error"), message);
-        adw_message_dialog_add_response(ADW_MESSAGE_DIALOG(err_dlg), "ok",
-                                        _("OK"));
-        adw_message_dialog_set_default_response(ADW_MESSAGE_DIALOG(err_dlg),
-                                                "ok");
-        adw_message_dialog_set_close_response(ADW_MESSAGE_DIALOG(err_dlg),
-                                              "ok");
-        gtk_window_present(GTK_WINDOW(err_dlg));
-    }
 };
-
-#undef _

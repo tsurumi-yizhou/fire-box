@@ -1,22 +1,15 @@
-#pragma once
-
-#include "dbus_client.hpp"
+module;
 
 #include <adwaita.h>
 #include <gtk/gtk.h>
-#include <libintl.h>
-
 #include <string>
 #include <vector>
 
-#define _(S) gettext(S)
+export module allowlist;
+import dbus_client;
+import i18n;
 
-/// Allowlist view — lists applications that have been granted access to Fire Box.
-///
-/// GtkStack pages:
-///   - "empty" : Adw.StatusPage placeholder
-///   - "list"  : Adw.PreferencesGroup with one Adw.ActionRow per entry
-class AllowlistView {
+export class AllowlistView {
 public:
     AllowlistView() {
         scrolled_ = gtk_scrolled_window_new();
@@ -28,7 +21,6 @@ public:
                                       GTK_STACK_TRANSITION_TYPE_CROSSFADE);
         gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scrolled_), stack_);
 
-        // ---- empty state --------------------------------------------------
         GtkWidget* empty_page = adw_status_page_new();
         adw_status_page_set_icon_name(ADW_STATUS_PAGE(empty_page),
                                       "security-high-symbolic");
@@ -38,7 +30,6 @@ public:
             _("Applications will appear here once they are granted access."));
         gtk_stack_add_named(GTK_STACK(stack_), empty_page, "empty");
 
-        // ---- list state ---------------------------------------------------
         GtkWidget* list_clamp = adw_clamp_new();
         adw_clamp_set_maximum_size(ADW_CLAMP(list_clamp), 600);
 
@@ -60,19 +51,18 @@ public:
 
     GtkWidget* widget() const { return scrolled_; }
 
-    /// Refresh the allowlist from the service.
-    void refresh(FireBoxDbusClient& client) {
+    Task refresh(FireBoxDbusClient* client) {
         for (auto* row : rows_) {
             adw_preferences_group_remove(ADW_PREFERENCES_GROUP(group_), row);
         }
         rows_.clear();
 
         try {
-            auto entries = client.get_allowlist();
+            auto entries = co_await client->get_allowlist();
 
             if (entries.empty()) {
                 gtk_stack_set_visible_child_name(GTK_STACK(stack_), "empty");
-                return;
+                co_return;
             }
 
             for (const auto& entry : entries) {
@@ -82,14 +72,13 @@ public:
                 adw_action_row_set_subtitle(ADW_ACTION_ROW(row),
                                             entry.app_path.c_str());
 
-                // "Revoke" button suffix
                 GtkWidget* revoke_btn = gtk_button_new_with_label(_("Revoke"));
                 gtk_widget_set_valign(revoke_btn, GTK_ALIGN_CENTER);
                 gtk_widget_add_css_class(revoke_btn, "destructive-action");
                 gtk_widget_set_tooltip_text(revoke_btn,
                                             _("Revoke access for this application"));
 
-                auto* ctx = new RevokeContext{this, &client, entry.app_path};
+                auto* ctx = new RevokeContext{this, client, entry.app_path};
                 g_object_set_data_full(G_OBJECT(revoke_btn), "ctx", ctx,
                     [](gpointer p) { delete static_cast<RevokeContext*>(p); });
                 g_signal_connect(revoke_btn, "clicked",
@@ -147,34 +136,24 @@ private:
                          G_CALLBACK(on_revoke_confirmed), confirm_ctx);
         gtk_window_present(GTK_WINDOW(dlg));
     }
+    
+    static Task do_revoke(RevokeContext* ctx) {
+        try {
+            co_await ctx->client->remove_from_allowlist(ctx->app_path);
+            co_await ctx->view->refresh(ctx->client);
+        } catch (const std::exception& e) {}
+        delete ctx;
+    }
 
     static void on_revoke_confirmed(AdwMessageDialog* dlg,
                                     const char* response,
                                     gpointer user_data) {
         auto* ctx = static_cast<RevokeContext*>(user_data);
         if (g_strcmp0(response, "revoke") == 0 && ctx) {
-            try {
-                ctx->client->remove_from_allowlist(ctx->app_path);
-                ctx->view->refresh(*ctx->client);
-            } catch (const std::exception& e) {
-                show_error(GTK_WINDOW(dlg), e.what());
-            }
+            do_revoke(ctx);
+        } else {
+            delete ctx;
         }
-        delete ctx;
         gtk_window_destroy(GTK_WINDOW(dlg));
     }
-
-    static void show_error(GtkWindow* parent, const char* message) {
-        GtkWidget* err_dlg = adw_message_dialog_new(
-            parent, _("Error"), message);
-        adw_message_dialog_add_response(ADW_MESSAGE_DIALOG(err_dlg), "ok",
-                                        _("OK"));
-        adw_message_dialog_set_default_response(ADW_MESSAGE_DIALOG(err_dlg),
-                                                "ok");
-        adw_message_dialog_set_close_response(ADW_MESSAGE_DIALOG(err_dlg),
-                                              "ok");
-        gtk_window_present(GTK_WINDOW(err_dlg));
-    }
 };
-
-#undef _

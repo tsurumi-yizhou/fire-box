@@ -1,4 +1,5 @@
 import Foundation
+@preconcurrency import XPC
 
 // MARK: - Data Models
 
@@ -100,10 +101,10 @@ private func xpcSend(_ request: [String: Any]) async -> [String: Any]? {
             }
         }
 
-        xpc_connection_send_message_with_reply(conn, msg, nil) { reply in
+        let connection = conn
+        xpc_connection_send_message_with_reply(connection, msg, nil) { reply in
             defer {
-                xpc_connection_cancel(conn)
-                xpc_release(conn)
+                xpc_connection_cancel(connection)
             }
 
             guard xpc_get_type(reply) == XPC_TYPE_DICTIONARY else {
@@ -138,7 +139,9 @@ private func xpcDictToSwift(_ obj: xpc_object_t) -> [String: Any] {
         let k = String(cString: key)
         let t = xpc_get_type(value)
         if t == XPC_TYPE_STRING {
-            result[k] = String(cString: xpc_string_get_string_ptr(value))
+            if let ptr = xpc_string_get_string_ptr(value) {
+                result[k] = String(cString: ptr)
+            }
         } else if t == XPC_TYPE_INT64 {
             result[k] = xpc_int64_get_value(value)
         } else if t == XPC_TYPE_DOUBLE {

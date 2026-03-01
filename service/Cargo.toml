@@ -38,8 +38,8 @@ systemd-journal-logger.workspace = true
 [target.'cfg(target_os = "macos")'.dependencies]
 xpc-connection.workspace = true
 xpc-connection-sys.workspace = true
-block = "0.1"
-libc = "0.2"
+block.workspace = true
+libc.workspace = true
 
 # Windows: Service Control Manager + COM server support
 [target.'cfg(target_os = "windows")'.dependencies]

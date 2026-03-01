@@ -1,31 +1,22 @@
-#pragma once
-
-#include "dbus_client.hpp"
+module;
 
 #include <adwaita.h>
 #include <gtk/gtk.h>
-#include <libintl.h>
-
 #include <cstdio>
 #include <string>
 
-#define _(S) gettext(S)
+export module dashboard;
+import dbus_client;
+import i18n;
 
-/// Data passed to the auto-refresh timer callback.
-struct DashboardRefreshData {
+export struct DashboardRefreshData {
     class DashboardView* view;
     FireBoxDbusClient*   client;
 };
 
-/// Dashboard view — shows aggregate service metrics and connection status.
-///
-/// Layout (top to bottom inside an Adw.Clamp):
-///   - Status label (connected / disconnected)
-///   - Adw.PreferencesGroup containing 7 Adw.ActionRow metric cards
-class DashboardView {
+export class DashboardView {
 public:
     explicit DashboardView(FireBoxDbusClient* client) {
-        // ---- root: vertical box inside a clamp ----------------------------
         clamp_ = adw_clamp_new();
         adw_clamp_set_maximum_size(ADW_CLAMP(clamp_), 600);
 
@@ -36,19 +27,16 @@ public:
         gtk_widget_set_margin_end(vbox, 12);
         adw_clamp_set_child(ADW_CLAMP(clamp_), vbox);
 
-        // ---- status label -------------------------------------------------
         status_label_ = gtk_label_new(_("Connecting..."));
         gtk_widget_add_css_class(status_label_, "title-4");
         gtk_widget_set_halign(status_label_, GTK_ALIGN_START);
         gtk_box_append(GTK_BOX(vbox), status_label_);
 
-        // ---- metrics preferences group ------------------------------------
         GtkWidget* group = adw_preferences_group_new();
         adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(group),
                                         _("Service Metrics"));
         gtk_box_append(GTK_BOX(vbox), group);
 
-        // Helper: create an ActionRow for a metric
         auto make_row = [&](const char* title, GtkWidget** value_label) {
             GtkWidget* row = adw_action_row_new();
             adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), title);
@@ -68,33 +56,26 @@ public:
         make_row(_("Latency Avg"),          &latency_avg_label_);
         make_row(_("Active Connections"),   &active_connections_label_);
 
-        // ---- auto-refresh timer -------------------------------------------
         refresh_data_ = new DashboardRefreshData{this, client};
         refresh_timer_id_ = g_timeout_add_seconds(2, on_auto_refresh, refresh_data_);
     }
 
     ~DashboardView() {
-        // Remove the GLib timer source to prevent the callback from firing
-        // after this object is destroyed.
         if (refresh_timer_id_ != 0) {
             g_source_remove(refresh_timer_id_);
             refresh_timer_id_ = 0;
         }
-        // The timer may still have been dispatched before removal; guard
-        // by zeroing the pointers so any in-flight callback is a no-op.
         if (refresh_data_) {
             refresh_data_->view = nullptr;
             refresh_data_->client = nullptr;
         }
     }
 
-    /// Return the top-level widget for embedding in a GtkStack or similar.
     GtkWidget* widget() const { return clamp_; }
 
-    /// Fetch fresh data from the service and update all labels.
-    void refresh(FireBoxDbusClient& client) {
+    Task refresh(FireBoxDbusClient* client) {
         try {
-            auto metrics = client.get_metrics_snapshot();
+            auto metrics = co_await client->get_metrics_snapshot();
 
             set_label(requests_total_label_,
                       std::to_string(metrics.requests_total).c_str());
@@ -115,7 +96,7 @@ public:
                           static_cast<unsigned long>(metrics.latency_avg_ms));
             set_label(latency_avg_label_, latency_buf);
 
-            auto connections = client.list_connections();
+            auto connections = co_await client->list_connections();
             set_label(active_connections_label_,
                       std::to_string(connections.size()).c_str());
 
@@ -151,14 +132,11 @@ private:
         gtk_label_set_text(GTK_LABEL(label), text);
     }
 
-    /// GSource callback for periodic auto-refresh.
     static gboolean on_auto_refresh(gpointer user_data) {
         auto* data = static_cast<DashboardRefreshData*>(user_data);
         if (data && data->view && data->client) {
-            data->view->refresh(*data->client);
+            data->view->refresh(data->client);
         }
         return G_SOURCE_CONTINUE;
     }
 };
-
-#undef _

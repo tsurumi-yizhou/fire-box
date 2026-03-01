@@ -28,9 +28,6 @@ const MAX_ID_LENGTH: usize = 512;
 /// Maximum number of messages in a single completion request.
 const MAX_MESSAGES: usize = 256;
 
-/// Maximum number of embedding inputs in a single request.
-const MAX_EMBED_INPUTS: usize = 256;
-
 // ---------------------------------------------------------------------------
 // Stream session state
 // ---------------------------------------------------------------------------
@@ -627,7 +624,7 @@ pub async fn handle_embed(req: xpc_object_t) -> xpc_object_t {
                 dict_set_i64(eobj, "index", e.index as i64);
                 for &v in &e.embedding {
                     // xpc_double_create_fn is re-exported from codec (extern "C")
-                    array_append(vec_arr, xpc_double_create_fn(v));
+                    array_append(vec_arr, xpc_double_create(v));
                 }
                 dict_set_obj(eobj, "embedding", vec_arr);
                 array_append(embs, eobj);
@@ -651,115 +648,124 @@ pub async fn handle_embed(req: xpc_object_t) -> xpc_object_t {
 // ---------------------------------------------------------------------------
 
 unsafe fn decode_messages(req: xpc_object_t) -> Vec<ChatMessage> {
-    let mut out = Vec::new();
-    let Some(arr) = dict_get_obj(req, "messages") else {
-        return out;
-    };
-    let count = array_len(arr);
-    for i in 0..count {
-        let Some(entry) = array_get(arr, i) else {
-            continue;
+    unsafe {
+        let mut out = Vec::new();
+        let Some(arr) = dict_get_obj(req, "messages") else {
+            return out;
         };
-        let role = dict_get_str(entry, "role").unwrap_or_else(|| "user".to_string());
-        let content = dict_get_str(entry, "content").unwrap_or_default();
-        let tcid = dict_get_str(entry, "tool_call_id");
-        let name = dict_get_str(entry, "name");
+        let count = array_len(arr);
+        for i in 0..count {
+            let Some(entry) = array_get(arr, i) else {
+                continue;
+            };
+            let role = dict_get_str(entry, "role").unwrap_or_else(|| "user".to_string());
+            let content = dict_get_str(entry, "content").unwrap_or_default();
+            let tcid = dict_get_str(entry, "tool_call_id");
+            let name = dict_get_str(entry, "name");
 
-        let tool_calls = if let Some(tc_arr) = dict_get_obj(entry, "tool_calls") {
-            let n = array_len(tc_arr);
-            let mut tcs = Vec::new();
-            for j in 0..n {
-                let Some(tco) = array_get(tc_arr, j) else {
-                    continue;
-                };
-                let tc_id = dict_get_str(tco, "id").unwrap_or_default();
-                let fn_name = dict_get_str(tco, "name").unwrap_or_default();
-                let fn_args = dict_get_str(tco, "arguments").unwrap_or_default();
-                tcs.push(ToolCall {
-                    id: tc_id,
-                    call_type: "function".to_string(),
-                    function: ToolCallFunction {
-                        name: fn_name,
-                        arguments: fn_args,
-                    },
-                });
-            }
-            if tcs.is_empty() { None } else { Some(tcs) }
-        } else {
-            None
-        };
+            let tool_calls = if let Some(tc_arr) = dict_get_obj(entry, "tool_calls") {
+                let n = array_len(tc_arr);
+                let mut tcs = Vec::new();
+                for j in 0..n {
+                    let Some(tco) = array_get(tc_arr, j) else {
+                        continue;
+                    };
+                    let tc_id = dict_get_str(tco, "id").unwrap_or_default();
+                    let fn_name = dict_get_str(tco, "name").unwrap_or_default();
+                    let fn_args = dict_get_str(tco, "arguments").unwrap_or_default();
+                    tcs.push(ToolCall {
+                        id: tc_id,
+                        call_type: "function".to_string(),
+                        function: ToolCallFunction {
+                            name: fn_name,
+                            arguments: fn_args,
+                        },
+                    });
+                }
+                if tcs.is_empty() { None } else { Some(tcs) }
+            } else {
+                None
+            };
 
-        out.push(ChatMessage {
-            role,
-            content,
-            tool_calls,
-            tool_call_id: tcid,
-            name,
-        });
+            out.push(ChatMessage {
+                role,
+                content,
+                tool_calls,
+                tool_call_id: tcid,
+                name,
+            });
+        }
+        out
     }
-    out
 }
 
 unsafe fn decode_messages_or_single(req: xpc_object_t) -> Vec<ChatMessage> {
-    let msgs = decode_messages(req);
-    if !msgs.is_empty() {
-        return msgs;
+    unsafe {
+        let msgs = decode_messages(req);
+        if !msgs.is_empty() {
+            return msgs;
+        }
+        let mut out = Vec::new();
+        if let Some(msg_obj) = dict_get_obj(req, "message") {
+            let role = dict_get_str(msg_obj, "role").unwrap_or_else(|| "user".to_string());
+            let content = dict_get_str(msg_obj, "content").unwrap_or_default();
+            let tcid = dict_get_str(msg_obj, "tool_call_id");
+            let name = dict_get_str(msg_obj, "name");
+            out.push(ChatMessage {
+                role,
+                content,
+                tool_calls: None,
+                tool_call_id: tcid,
+                name,
+            });
+        } else if let Some(content) = dict_get_str(req, "message") {
+            out.push(ChatMessage {
+                role: "user".to_string(),
+                content,
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
+            });
+        }
+        out
     }
-    let mut out = Vec::new();
-    if let Some(msg_obj) = dict_get_obj(req, "message") {
-        let role = dict_get_str(msg_obj, "role").unwrap_or_else(|| "user".to_string());
-        let content = dict_get_str(msg_obj, "content").unwrap_or_default();
-        let tcid = dict_get_str(msg_obj, "tool_call_id");
-        let name = dict_get_str(msg_obj, "name");
-        out.push(ChatMessage {
-            role,
-            content,
-            tool_calls: None,
-            tool_call_id: tcid,
-            name,
-        });
-    } else if let Some(content) = dict_get_str(req, "message") {
-        out.push(ChatMessage {
-            role: "user".to_string(),
-            content,
-            tool_calls: None,
-            tool_call_id: None,
-            name: None,
-        });
-    }
-    out
 }
 
 unsafe fn decode_tools(req: xpc_object_t) -> Vec<Tool> {
-    let mut out = Vec::new();
-    let Some(arr) = dict_get_obj(req, "tools") else {
-        return out;
-    };
-    let count = array_len(arr);
-    for i in 0..count {
-        let Some(entry) = array_get(arr, i) else {
-            continue;
+    unsafe {
+        let mut out = Vec::new();
+        let Some(arr) = dict_get_obj(req, "tools") else {
+            return out;
         };
-        let name = dict_get_str(entry, "name").unwrap_or_default();
-        let description = dict_get_str(entry, "description");
-        let params = dict_get_str(entry, "parameters").and_then(|j| serde_json::from_str(&j).ok());
-        out.push(Tool {
-            tool_type: "function".to_string(),
-            function: ToolFunction {
-                name,
-                description,
-                parameters: params,
-            },
-        });
+        let count = array_len(arr);
+        for i in 0..count {
+            let Some(entry) = array_get(arr, i) else {
+                continue;
+            };
+            let name = dict_get_str(entry, "name").unwrap_or_default();
+            let description = dict_get_str(entry, "description");
+            let params =
+                dict_get_str(entry, "parameters").and_then(|j| serde_json::from_str(&j).ok());
+            out.push(Tool {
+                tool_type: "function".to_string(),
+                function: ToolFunction {
+                    name,
+                    description,
+                    parameters: params,
+                },
+            });
+        }
+        out
     }
-    out
 }
 
 unsafe fn encode_tool_call(tc: &ToolCall) -> xpc_object_t {
-    let obj = dict_new();
-    dict_set_str(obj, "id", &tc.id);
-    dict_set_str(obj, "type", &tc.call_type);
-    dict_set_str(obj, "name", &tc.function.name);
-    dict_set_str(obj, "arguments", &tc.function.arguments);
-    obj
+    unsafe {
+        let obj = dict_new();
+        dict_set_str(obj, "id", &tc.id);
+        dict_set_str(obj, "type", &tc.call_type);
+        dict_set_str(obj, "name", &tc.function.name);
+        dict_set_str(obj, "arguments", &tc.function.arguments);
+        obj
+    }
 }

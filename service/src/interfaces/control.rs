@@ -637,36 +637,38 @@ pub async fn handle_get_route_rules(req: xpc_object_t) -> xpc_object_t {
 }
 
 unsafe fn encode_route_rule(rule: &route::RouteRule) -> xpc_object_t {
-    let entry = dict_new();
-    dict_set_str(entry, "virtual_model_id", &rule.virtual_model_id);
-    dict_set_str(entry, "display_name", &rule.display_name);
-    dict_set_str(
-        entry,
-        "strategy",
-        match rule.strategy {
-            route::RouteStrategy::Random => "random",
-            route::RouteStrategy::Failover => "failover",
-        },
-    );
+    unsafe {
+        let entry = dict_new();
+        dict_set_str(entry, "virtual_model_id", &rule.virtual_model_id);
+        dict_set_str(entry, "display_name", &rule.display_name);
+        dict_set_str(
+            entry,
+            "strategy",
+            match rule.strategy {
+                route::RouteStrategy::Random => "random",
+                route::RouteStrategy::Failover => "failover",
+            },
+        );
 
-    let targets_arr = array_new();
-    for t in &rule.targets {
-        let te = dict_new();
-        dict_set_str(te, "provider_id", &t.provider_id);
-        dict_set_str(te, "model_id", &t.model_id);
-        array_append(targets_arr, te);
+        let targets_arr = array_new();
+        for t in &rule.targets {
+            let te = dict_new();
+            dict_set_str(te, "provider_id", &t.provider_id);
+            dict_set_str(te, "model_id", &t.model_id);
+            array_append(targets_arr, te);
+        }
+        dict_set_obj(entry, "targets", targets_arr);
+
+        let caps = dict_new();
+        dict_set_bool(caps, "chat", rule.capabilities.chat);
+        dict_set_bool(caps, "streaming", rule.capabilities.streaming);
+        dict_set_bool(caps, "embeddings", rule.capabilities.embeddings);
+        dict_set_bool(caps, "vision", rule.capabilities.vision);
+        dict_set_bool(caps, "tool_calling", rule.capabilities.tool_calling);
+        dict_set_obj(entry, "capabilities", caps);
+
+        entry
     }
-    dict_set_obj(entry, "targets", targets_arr);
-
-    let caps = dict_new();
-    dict_set_bool(caps, "chat", rule.capabilities.chat);
-    dict_set_bool(caps, "streaming", rule.capabilities.streaming);
-    dict_set_bool(caps, "embeddings", rule.capabilities.embeddings);
-    dict_set_bool(caps, "vision", rule.capabilities.vision);
-    dict_set_bool(caps, "tool_calling", rule.capabilities.tool_calling);
-    dict_set_obj(entry, "capabilities", caps);
-
-    entry
 }
 
 // ---------------------------------------------------------------------------

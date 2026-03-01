@@ -15,7 +15,7 @@ use xpc_connection_sys::{
 
 // xpc_connection_get_pid is a standard XPC function but not exported by
 // xpc-connection-sys 0.1.1; declare it directly.
-extern "C" {
+unsafe extern "C" {
     fn xpc_connection_get_pid(connection: xpc_connection_t) -> libc::pid_t;
 }
 
@@ -60,7 +60,7 @@ pub fn run_listener() {
         registry: &ConnectionRegistry,
     ) -> xpc_object_t {
         registry.increment(conn_id);
-        let cmd = dict_get_str(event, "cmd").unwrap_or_default();
+        let cmd = unsafe { dict_get_str(event, "cmd").unwrap_or_default() };
 
         // Run the async handler on the global runtime, blocking this dispatch thread.
         // `block_on` does NOT require the future to be Send; it runs on the calling thread.
@@ -99,7 +99,7 @@ pub fn run_listener() {
                 "close_stream" => super::capability::handle_close_stream(event).await,
                 "embed" => super::capability::handle_embed(event).await,
 
-                _ => response_err(&format!("unknown command: {cmd}")),
+                _ => unsafe { response_err(&format!("unknown command: {cmd}")) },
             }
         })
     }

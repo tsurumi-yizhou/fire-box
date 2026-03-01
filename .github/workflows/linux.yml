@@ -11,13 +11,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            cmake \
             ninja-build \
             meson \
             xdg-utils \
@@ -31,7 +30,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache Rust dependencies
-        uses: actions/cache@v5
+        uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/bin/
@@ -41,19 +40,28 @@ jobs:
             target/
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Configure with CMake
-        run: cmake -B build
+      - name: Build Rust Service
+        run: cargo build --release --manifest-path service/Cargo.toml
 
-      - name: Build with CMake
-        run: cmake --build build --config Release
-
-      - name: Create package
+      - name: Build C++ App
         run: |
-          cd build
-          cpack -C Release
+          cd linux
+          meson setup build --buildtype=release
+          meson compile -C build
 
-      - name: Upload package
+      - name: Assemble Package
+        run: |
+          mkdir -p build/linux/FireBox
+          # Since Meson uses `install`, we can install into our temporary directory.
+          DESTDIR=$(pwd)/build/linux/FireBox meson install -C linux/build
+          
+          # Manually copy the Rust service since it wasn't built by Meson
+          # Ensure bin directory exists
+          mkdir -p build/linux/FireBox/usr/local/bin
+          cp target/release/firebox-service build/linux/FireBox/usr/local/bin/
+
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: FireBox-Linux
-          path: build/firebox_*.deb
+          path: build/linux/FireBox

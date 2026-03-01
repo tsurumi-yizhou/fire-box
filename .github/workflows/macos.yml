@@ -11,13 +11,13 @@ jobs:
     runs-on: macos-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache Rust dependencies
-        uses: actions/cache@v5
+        uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/bin/
@@ -27,19 +27,39 @@ jobs:
             target/
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Configure with CMake
-        run: cmake -B build
+      - name: Build Rust Service
+        run: cargo build --release --manifest-path service/Cargo.toml
 
-      - name: Build with CMake
-        run: cmake --build build --config Release
-
-      - name: Create package
+      - name: Build Swift App
         run: |
-          cd build
-          cpack -C Release
+          cd macos
+          swift build -c release
 
-      - name: Upload package
+      - name: Assemble App Bundle
+        run: |
+          APP_DIR="build/macos/FireBox.app"
+          mkdir -p "$APP_DIR/Contents/MacOS"
+          mkdir -p "$APP_DIR/Contents/Resources"
+          mkdir -p "$APP_DIR/Contents/Library/LaunchDaemons"
+          
+          # Copy executables
+          cp macos/.build/release/App "$APP_DIR/Contents/MacOS/App"
+          cp macos/.build/release/Helper "$APP_DIR/Contents/MacOS/Helper"
+          cp target/release/firebox-service "$APP_DIR/Contents/MacOS/firebox-service"
+          
+          # Copy metadata
+          cp macos/Info.plist "$APP_DIR/Contents/Info.plist"
+          echo "APPL????" > "$APP_DIR/Contents/PkgInfo"
+          
+          # Copy localization and other resources
+          cp -r macos/Sources/App/Resources/* "$APP_DIR/Contents/Resources/"
+          cp -r macos/Sources/Helper/Resources/* "$APP_DIR/Contents/Resources/"
+          
+          # Copy LaunchDaemon plist for SMAppService
+          cp macos/com.firebox.service.plist "$APP_DIR/Contents/Library/LaunchDaemons/"
+
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: FireBox-macOS
-          path: build/FireBox-*.pkg
+          path: build/macos/FireBox.app

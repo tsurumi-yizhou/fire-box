@@ -36,6 +36,8 @@ keyring = "3.6"
 zbus = { version = "5.14", features = ["tokio"] }
 xpc-connection = "0.2.3"
 xpc-connection-sys = "0.1.1"
+block = "0.1"
+libc = "0.2"
 
 # Platform-specific dependencies
 systemd-journal-logger = "2.2"

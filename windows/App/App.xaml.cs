@@ -1,4 +1,6 @@
 using System;
+using System.Diagnostics;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading;
 using Microsoft.UI.Xaml;
@@ -19,17 +21,81 @@ public partial class App : Application
         InitializeComponent();
     }
 
+    private void SetupService()
+    {
+        string exePath = Process.GetCurrentProcess().MainModule?.FileName ?? "";
+        string dir = Path.GetDirectoryName(exePath) ?? "";
+        string serviceBin = Path.Combine(dir, "firebox-service.exe");
+
+        if (!File.Exists(serviceBin)) return;
+
+        // Check if service exists
+        using Process queryProc = new Process();
+        queryProc.StartInfo.FileName = "sc.exe";
+        queryProc.StartInfo.Arguments = "query firebox";
+        queryProc.StartInfo.CreateNoWindow = true;
+        queryProc.StartInfo.UseShellExecute = false;
+        queryProc.Start();
+        queryProc.WaitForExit();
+
+        if (queryProc.ExitCode != 0) // Service not found
+        {
+            try
+            {
+                var psi = new ProcessStartInfo
+                {
+                    FileName = "sc.exe",
+                    Arguments = $"create firebox binPath= \"{serviceBin}\" start= auto",
+                    Verb = "runas",
+                    UseShellExecute = true,
+                    CreateNoWindow = true
+                };
+                Process.Start(psi)?.WaitForExit();
+            }
+            catch { /* User may have cancelled UAC */ }
+        }
+
+        // Try to start the service (will require admin if not running and we use runas)
+        // Check if running first
+        using Process stateProc = new Process();
+        stateProc.StartInfo.FileName = "sc.exe";
+        stateProc.StartInfo.Arguments = "query firebox";
+        stateProc.StartInfo.CreateNoWindow = true;
+        stateProc.StartInfo.UseShellExecute = false;
+        stateProc.StartInfo.RedirectStandardOutput = true;
+        stateProc.Start();
+        string output = stateProc.StandardOutput.ReadToEnd();
+        stateProc.WaitForExit();
+
+        if (!output.Contains("RUNNING"))
+        {
+            try
+            {
+                var startPsi = new ProcessStartInfo
+                {
+                    FileName = "sc.exe",
+                    Arguments = "start firebox",
+                    Verb = "runas",
+                    UseShellExecute = true,
+                    CreateNoWindow = true
+                };
+                Process.Start(startPsi)?.WaitForExit();
+            }
+            catch { /* Ignore UAC cancellation */ }
+        }
+    }
+
     protected override void OnLaunched(LaunchActivatedEventArgs args)
     {
         // Single-instance guard
         _mutex = new Mutex(true, "Local\\FireBoxAppMutex", out bool isNewInstance);
         if (!isNewInstance)
         {
-            // Another instance is running — bring it to the foreground via the mutex
-            // name convention and exit this process.
             Environment.Exit(0);
             return;
         }
+
+        SetupService();
 
         _window = new MainWindow();
 
