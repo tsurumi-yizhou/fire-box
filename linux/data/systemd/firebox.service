@@ -1,0 +1,18 @@
+[Unit]
+Description=FireBox AI Gateway Service
+Documentation=https://github.com/example/fire-box
+
+[Service]
+Type=dbus
+BusName=org.firebox
+ExecStart=%h/.local/bin/firebox-backend
+Restart=on-failure
+RestartSec=5
+
+# Sandboxing
+ProtectHome=read-only
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+  "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+  "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>FireBox</vendor>
+  <vendor_url>https://github.com/example/fire-box</vendor_url>
+
+  <!-- TOFU: Authorize a new client application -->
+  <action id="org.firebox.authorize-client">
+    <description>Authorize an application to use FireBox AI services</description>
+    <message>Authentication is required to authorize "$(app_name)" to access FireBox.</message>
+    <defaults>
+      <allow_any>auth_self</allow_any>
+      <allow_inactive>auth_self</allow_inactive>
+      <allow_active>auth_self</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.owner">unix-user:$USER</annotate>
+  </action>
+
+  <!-- Service control: start/stop the FireBox backend -->
+  <action id="org.firebox.manage-service">
+    <description>Start or stop the FireBox backend service</description>
+    <message>Authentication is required to manage the FireBox service.</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+</policyconfig>

@@ -1,0 +1,173 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+  "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<!--
+  org.firebox.Control — Management protocol for the FireBox frontend.
+  Translated from the protobuf specification in docs/backend/control.md.
+-->
+<node>
+  <interface name="org.firebox.Control">
+
+    <!-- ── Provider Management ─────────────────────────────── -->
+
+    <method name="AddApiKeyProvider">
+      <arg name="name"          type="s" direction="in"/>
+      <arg name="provider_type" type="s" direction="in"/>
+      <arg name="api_key"       type="s" direction="in"/>
+      <arg name="base_url"      type="s" direction="in"/>
+      <arg name="success"       type="b" direction="out"/>
+      <arg name="message"       type="s" direction="out"/>
+      <arg name="provider_id"   type="s" direction="out"/>
+    </method>
+
+    <method name="AddOAuthProvider">
+      <arg name="name"            type="s" direction="in"/>
+      <arg name="provider_type"   type="s" direction="in"/>
+      <arg name="success"         type="b" direction="out"/>
+      <arg name="message"         type="s" direction="out"/>
+      <arg name="provider_id"     type="s" direction="out"/>
+      <arg name="device_code"     type="s" direction="out"/>
+      <arg name="user_code"       type="s" direction="out"/>
+      <arg name="verification_uri" type="s" direction="out"/>
+      <arg name="expires_in"      type="i" direction="out"/>
+      <arg name="interval"        type="i" direction="out"/>
+    </method>
+
+    <method name="CompleteOAuth">
+      <arg name="provider_id"  type="s" direction="in"/>
+      <arg name="success"      type="b" direction="out"/>
+      <arg name="message"      type="s" direction="out"/>
+      <!-- status: 1=PENDING,2=SUCCESS,3=EXPIRED,4=DENIED,5=NETWORK_ERROR -->
+      <arg name="status"       type="i" direction="out"/>
+      <arg name="credentials_json" type="s" direction="out"/>
+    </method>
+
+    <method name="ListProviders">
+      <arg name="success"   type="b" direction="out"/>
+      <arg name="message"   type="s" direction="out"/>
+      <!-- Each provider: (s id, s name, i type, s base_url, s local_path, b enabled) -->
+      <arg name="providers" type="a(ssissb)" direction="out"/>
+    </method>
+
+    <method name="UpdateProvider">
+      <arg name="provider_id" type="s" direction="in"/>
+      <arg name="name"        type="s" direction="in"/>
+      <arg name="api_key"     type="s" direction="in"/>
+      <arg name="base_url"    type="s" direction="in"/>
+      <arg name="success"     type="b" direction="out"/>
+      <arg name="message"     type="s" direction="out"/>
+    </method>
+
+    <method name="DeleteProvider">
+      <arg name="provider_id" type="s" direction="in"/>
+      <arg name="success"     type="b" direction="out"/>
+      <arg name="message"     type="s" direction="out"/>
+    </method>
+    <method name="DiscoverModels">
+      <arg name="provider_id" type="s" direction="in"/>
+      <arg name="success"     type="b" direction="out"/>
+      <arg name="message"     type="s" direction="out"/>
+      <!-- count: number of models discovered and stored -->
+      <arg name="count"       type="i" direction="out"/>
+    </method>
+    <!-- ── Model Configuration ─────────────────────────────── -->
+
+    <method name="GetAllModels">
+      <arg name="provider_id" type="s" direction="in"/>
+      <arg name="success"     type="b" direction="out"/>
+      <arg name="message"     type="s" direction="out"/>
+      <!-- Each model: (s model_id, s provider_id, b enabled, b chat, b streaming) -->
+      <arg name="models"      type="a(ssbbb)" direction="out"/>
+    </method>
+
+    <method name="SetModelEnabled">
+      <arg name="provider_id" type="s" direction="in"/>
+      <arg name="model_id"    type="s" direction="in"/>
+      <arg name="enabled"     type="b" direction="in"/>
+      <arg name="success"     type="b" direction="out"/>
+      <arg name="message"     type="s" direction="out"/>
+    </method>
+
+    <!-- ── Routing ─────────────────────────────────────────── -->
+
+    <method name="SetRouteRules">
+      <arg name="virtual_model_id" type="s"  direction="in"/>
+      <arg name="display_name"     type="s"  direction="in"/>
+      <!-- capabilities: (b chat, b streaming, b embeddings, b vision, b tool_calling) -->
+      <arg name="capabilities"     type="(bbbbb)" direction="in"/>
+      <!-- metadata_json: JSON-encoded RouteMetadata -->
+      <arg name="metadata_json"    type="s"  direction="in"/>
+      <!-- targets: array of (s provider_id, s model_id) -->
+      <arg name="targets"          type="a(ss)" direction="in"/>
+      <!-- strategy: 1=FAILOVER, 2=RANDOM -->
+      <arg name="strategy"         type="i"  direction="in"/>
+      <arg name="success"          type="b"  direction="out"/>
+      <arg name="message"          type="s"  direction="out"/>
+    </method>
+
+    <method name="GetRouteRules">
+      <arg name="virtual_model_id" type="s"  direction="in"/>
+      <arg name="success"          type="b"  direction="out"/>
+      <arg name="message"          type="s"  direction="out"/>
+      <arg name="display_name"     type="s"  direction="out"/>
+      <arg name="capabilities"     type="(bbbbb)" direction="out"/>
+      <arg name="metadata_json"    type="s"  direction="out"/>
+      <arg name="targets"          type="a(ss)" direction="out"/>
+      <arg name="strategy"         type="i"  direction="out"/>
+    </method>
+
+    <method name="ListRouteRules">
+      <arg name="success" type="b" direction="out"/>
+      <arg name="message" type="s" direction="out"/>
+      <!-- Each rule summary as JSON (complex nested type) -->
+      <arg name="rules_json" type="s" direction="out"/>
+    </method>
+
+    <!-- ── Metrics ─────────────────────────────────────────── -->
+
+    <method name="GetMetricsSnapshot">
+      <arg name="success"          type="b" direction="out"/>
+      <arg name="message"          type="s" direction="out"/>
+      <arg name="window_start_ms"  type="x" direction="out"/>
+      <arg name="window_end_ms"    type="x" direction="out"/>
+      <arg name="requests_total"   type="x" direction="out"/>
+      <arg name="requests_failed"  type="x" direction="out"/>
+      <arg name="prompt_tokens"    type="x" direction="out"/>
+      <arg name="completion_tokens" type="x" direction="out"/>
+      <arg name="cost_total"       type="d" direction="out"/>
+    </method>
+
+    <method name="GetMetricsRange">
+      <arg name="start_ms"    type="x" direction="in"/>
+      <arg name="end_ms"      type="x" direction="in"/>
+      <arg name="success"     type="b" direction="out"/>
+      <arg name="message"     type="s" direction="out"/>
+      <!-- JSON array of MetricsSnapshot objects -->
+      <arg name="snapshots_json" type="s" direction="out"/>
+    </method>
+
+    <!-- ── Connections ─────────────────────────────────────── -->
+
+    <method name="ListConnections">
+      <arg name="success" type="b" direction="out"/>
+      <arg name="message" type="s" direction="out"/>
+      <!-- Each connection: (s id, s client_name, i pid, x connected_at_ms, x requests_count) -->
+      <arg name="connections" type="a(ssixx)" direction="out"/>
+    </method>
+
+    <!-- ── Allowlist ───────────────────────────────────────── -->
+
+    <method name="GetAllowlist">
+      <arg name="success" type="b" direction="out"/>
+      <arg name="message" type="s" direction="out"/>
+      <!-- Each app: (s app_path, s display_name, x first_seen_ms, x last_used_ms) -->
+      <arg name="apps"    type="a(ssxx)" direction="out"/>
+    </method>
+
+    <method name="RemoveFromAllowlist">
+      <arg name="app_path" type="s" direction="in"/>
+      <arg name="success"  type="b" direction="out"/>
+      <arg name="message"  type="s" direction="out"/>
+    </method>
+
+  </interface>
+</node>

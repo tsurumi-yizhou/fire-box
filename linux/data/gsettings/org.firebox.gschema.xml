@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.firebox" path="/org/firebox/">
+
+    <key name="auto-refresh" type="b">
+      <default>true</default>
+      <summary>Auto-refresh dashboard</summary>
+      <description>Whether to automatically refresh the dashboard metrics.</description>
+    </key>
+
+    <key name="refresh-interval-ms" type="i">
+      <default>1000</default>
+      <summary>Refresh interval in milliseconds</summary>
+      <description>How frequently the dashboard auto-refreshes (in ms).</description>
+    </key>
+
+    <key name="window-width" type="i">
+      <default>1000</default>
+      <summary>Main window width</summary>
+    </key>
+
+    <key name="window-height" type="i">
+      <default>700</default>
+      <summary>Main window height</summary>
+    </key>
+
+    <key name="window-maximized" type="b">
+      <default>false</default>
+      <summary>Main window maximized state</summary>
+    </key>
+
+  </schema>
+</schemalist>

@@ -1,0 +1,139 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+  "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<!--
+  org.firebox.Capability — AI capability protocol for client applications.
+  Translated from the protobuf specification in docs/backend/capability.md.
+-->
+<node>
+  <interface name="org.firebox.Capability">
+
+    <!-- ── Discovery ───────────────────────────────────────── -->
+
+    <!--
+      ListAvailableModels() → (b success, s message, a(ssbbbbbisissas) models)
+      Each model tuple:
+        s  id
+        s  display_name
+        b  cap_chat
+        b  cap_streaming
+        b  cap_embeddings
+        b  cap_vision
+        b  cap_tool_calling
+        i  context_window
+        s  pricing_tier
+        s  description
+        s  (reserved)
+        as strengths
+    -->
+    <method name="ListAvailableModels">
+      <arg name="success"  type="b"  direction="out"/>
+      <arg name="message"  type="s"  direction="out"/>
+      <arg name="models"   type="a(ssbbbbbiissas)" direction="out"/>
+    </method>
+
+    <!--
+      GetModelMetadata(model_id) → (b success, s message, model-fields…)
+    -->
+    <method name="GetModelMetadata">
+      <arg name="model_id"       type="s"  direction="in"/>
+      <arg name="success"        type="b"  direction="out"/>
+      <arg name="message"        type="s"  direction="out"/>
+      <arg name="id"             type="s"  direction="out"/>
+      <arg name="display_name"   type="s"  direction="out"/>
+      <arg name="cap_chat"       type="b"  direction="out"/>
+      <arg name="cap_streaming"  type="b"  direction="out"/>
+      <arg name="cap_embeddings" type="b"  direction="out"/>
+      <arg name="cap_vision"     type="b"  direction="out"/>
+      <arg name="cap_tool_calling" type="b" direction="out"/>
+      <arg name="context_window" type="i"  direction="out"/>
+      <arg name="pricing_tier"   type="s"  direction="out"/>
+      <arg name="description"    type="s"  direction="out"/>
+      <arg name="strengths"      type="as" direction="out"/>
+    </method>
+
+    <!-- ── Auth Status ─────────────────────────────────────── -->
+
+    <method name="GetAuthStatus">
+      <arg name="success"    type="b"  direction="out"/>
+      <arg name="message"    type="s"  direction="out"/>
+      <arg name="authorized" type="b"  direction="out"/>
+      <arg name="app_name"   type="s"  direction="out"/>
+    </method>
+
+    <!-- ── Non-streaming Completion ────────────────────────── -->
+
+    <!--
+      Complete(model_id, messages_json, tools_json, temperature, max_tokens)
+        → (success, message, completion_json, usage_prompt, usage_completion,
+           usage_total, finish_reason)
+      messages_json and tools_json are JSON-encoded arrays (complex nested
+      structures do not map cleanly to D-Bus native types).
+    -->
+    <method name="Complete">
+      <arg name="model_id"         type="s"  direction="in"/>
+      <arg name="messages_json"    type="s"  direction="in"/>
+      <arg name="tools_json"       type="s"  direction="in"/>
+      <arg name="temperature"      type="d"  direction="in"/>
+      <arg name="max_tokens"       type="i"  direction="in"/>
+      <arg name="success"          type="b"  direction="out"/>
+      <arg name="message"          type="s"  direction="out"/>
+      <arg name="completion_json"  type="s"  direction="out"/>
+      <arg name="prompt_tokens"    type="i"  direction="out"/>
+      <arg name="completion_tokens" type="i" direction="out"/>
+      <arg name="total_tokens"     type="i"  direction="out"/>
+      <arg name="finish_reason"    type="s"  direction="out"/>
+    </method>
+
+    <!-- ── Streaming ──────────────────────────────────────── -->
+
+    <method name="CreateStream">
+      <arg name="model_id"     type="s"  direction="in"/>
+      <arg name="temperature"  type="d"  direction="in"/>
+      <arg name="max_tokens"   type="i"  direction="in"/>
+      <arg name="success"      type="b"  direction="out"/>
+      <arg name="message"      type="s"  direction="out"/>
+      <arg name="stream_id"    type="s"  direction="out"/>
+    </method>
+
+    <method name="SendMessage">
+      <arg name="stream_id"      type="s"  direction="in"/>
+      <arg name="message_json"   type="s"  direction="in"/>
+      <arg name="tools_json"     type="s"  direction="in"/>
+      <arg name="success"        type="b"  direction="out"/>
+      <arg name="message"        type="s"  direction="out"/>
+    </method>
+
+    <method name="ReceiveStream">
+      <arg name="stream_id"          type="s"  direction="in"/>
+      <arg name="timeout_ms"         type="i"  direction="in"/>
+      <arg name="success"            type="b"  direction="out"/>
+      <arg name="message"            type="s"  direction="out"/>
+      <arg name="chunk_json"         type="s"  direction="out"/>
+      <arg name="done"               type="b"  direction="out"/>
+      <arg name="prompt_tokens"      type="i"  direction="out"/>
+      <arg name="completion_tokens"  type="i"  direction="out"/>
+      <arg name="total_tokens"       type="i"  direction="out"/>
+      <arg name="finish_reason"      type="s"  direction="out"/>
+    </method>
+
+    <method name="CloseStream">
+      <arg name="stream_id"  type="s"  direction="in"/>
+      <arg name="success"    type="b"  direction="out"/>
+      <arg name="message"    type="s"  direction="out"/>
+    </method>
+
+    <!-- ── Embeddings ─────────────────────────────────────── -->
+
+    <method name="Embed">
+      <arg name="model_id"         type="s"  direction="in"/>
+      <arg name="inputs"           type="as" direction="in"/>
+      <arg name="encoding_format"  type="s"  direction="in"/>
+      <arg name="success"          type="b"  direction="out"/>
+      <arg name="message"          type="s"  direction="out"/>
+      <arg name="embeddings_json"  type="s"  direction="out"/>
+      <arg name="prompt_tokens"    type="i"  direction="out"/>
+      <arg name="total_tokens"     type="i"  direction="out"/>
+    </method>
+
+  </interface>
+</node>
